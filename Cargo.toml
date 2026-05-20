@@ -1,0 +1,31 @@
+[package]
+name = "scissors"
+version = "0.0.1"
+edition = "2021"
+rust-version = "1.75"
+authors = ["Geoffrey Guéret <geoffrey@gueret.dev>"]
+description = "Editor-based content approval, git-commit style"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/ggueret/scissors"
+homepage = "https://github.com/ggueret/scissors"
+readme = "README.md"
+keywords = ["cli", "editor", "approval", "scissors", "review"]
+categories = ["command-line-utilities"]
+exclude = [
+    ".github/",
+    "pyproject.toml",
+    "tests/",
+    "/scissors-*.md",
+]
+
+[dependencies]
+clap = { version = "4.6", features = ["derive"] }
+
+[dev-dependencies]
+assert_cmd = "2.2"
+predicates = "3.1"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
