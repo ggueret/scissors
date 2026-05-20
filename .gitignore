@@ -1,0 +1,21 @@
+# Rust
+/target
+
+# Python / maturin
+/dist
+/build
+*.whl
+*.egg-info
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+
+# Editors
+*.swp
+.idea/
+.vscode/
+
+# Drafts (in case scissors runs locally during dev)
+/scissors-*.md
