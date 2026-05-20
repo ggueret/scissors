@@ -1,0 +1,33 @@
+[build-system]
+requires = ["maturin>=1.13,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "scissors"
+version = "0.0.1"
+description = "Editor-based content approval, git-commit style"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT OR Apache-2.0" }
+authors = [{ name = "Geoffrey Guéret", email = "geoffrey@gueret.dev" }]
+keywords = ["cli", "editor", "approval", "scissors"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Topic :: Software Development",
+    "Topic :: Utilities",
+]
+
+[project.urls]
+Homepage = "https://github.com/ggueret/scissors"
+Repository = "https://github.com/ggueret/scissors"
+Issues = "https://github.com/ggueret/scissors/issues"
+
+[tool.maturin]
+bindings = "bin"
+strip = true
