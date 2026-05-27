@@ -45,7 +45,10 @@ pub enum ScissorsError {
          sandbox blocking the editor's IPC, or the binary not on PATH; \
          draft preserved at {draft_path}"
     )]
-    SilentFailure { elapsed_ms: u32, draft_path: PathBuf },
+    SilentFailure {
+        elapsed_ms: u32,
+        draft_path: PathBuf,
+    },
 
     #[error("io error: {0}")]
     Io(#[from] io::Error),
@@ -127,7 +130,10 @@ pub fn approve_in_editor(content: &str, context: Option<&str>) -> Result<Outcome
     let editor = resolve_editor()?;
     let draft = build_draft(content, context);
 
-    let mut tmp = Builder::new().prefix("scissors-").suffix(".md").tempfile()?;
+    let mut tmp = Builder::new()
+        .prefix("scissors-")
+        .suffix(".md")
+        .tempfile()?;
     tmp.write_all(draft.as_bytes())?;
     tmp.flush()?;
     let path = tmp.path().to_path_buf();
