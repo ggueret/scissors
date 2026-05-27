@@ -1,6 +1,6 @@
 [package]
 name = "scissors"
-version = "0.0.1"
+version = "0.1.0"
 edition = "2021"
 rust-version = "1.75"
 authors = ["Geoffrey Guéret <geoffrey@gueret.dev>"]
@@ -15,15 +15,28 @@ exclude = [
     ".github/",
     "pyproject.toml",
     "tests/",
+    "fuzz/",
     "/scissors-*.md",
 ]
 
+[lib]
+name = "scissors"
+path = "src/lib.rs"
+
+[[bin]]
+name = "scissors"
+path = "src/main.rs"
+
 [dependencies]
 clap = { version = "4.6", features = ["derive"] }
+tempfile = "3.27"
+thiserror = "2.0"
+shell-words = "1.1"
 
 [dev-dependencies]
 assert_cmd = "2.2"
 predicates = "3.1"
+serial_test = "3.4"
 
 [profile.release]
 strip = true
