@@ -74,6 +74,24 @@ pub fn build_draft(content: &str, context: Option<&str>) -> String {
     out
 }
 
+/// Resolve the editor command, honouring $VISUAL > $EDITOR > `vi`.
+/// Returns the command split into program + args (e.g. `["code", "--wait"]`).
+pub fn resolve_editor() -> Result<Vec<String>, ScissorsError> {
+    for var in ["VISUAL", "EDITOR"] {
+        if let Ok(val) = std::env::var(var) {
+            let trimmed = val.trim();
+            if !trimmed.is_empty() {
+                let parts = shell_words::split(trimmed)
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+                if !parts.is_empty() {
+                    return Ok(parts);
+                }
+            }
+        }
+    }
+    Ok(vec!["vi".to_string()])
+}
+
 #[cfg(test)]
 mod strip_tests {
     use super::*;
@@ -130,5 +148,35 @@ mod build_tests {
     fn round_trips_through_strip() {
         let draft = build_draft("hello\nworld", None);
         assert_eq!(strip_scissors(&draft), "hello\nworld");
+    }
+}
+
+#[cfg(test)]
+mod editor_tests {
+    use super::*;
+    use serial_test::serial;
+
+    #[test]
+    #[serial]
+    fn visual_takes_priority() {
+        std::env::set_var("VISUAL", "myvisual --wait");
+        std::env::set_var("EDITOR", "myeditor");
+        assert_eq!(resolve_editor().unwrap(), vec!["myvisual", "--wait"]);
+    }
+
+    #[test]
+    #[serial]
+    fn editor_used_when_visual_unset() {
+        std::env::remove_var("VISUAL");
+        std::env::set_var("EDITOR", "nano");
+        assert_eq!(resolve_editor().unwrap(), vec!["nano"]);
+    }
+
+    #[test]
+    #[serial]
+    fn falls_back_to_vi_when_both_unset() {
+        std::env::remove_var("VISUAL");
+        std::env::remove_var("EDITOR");
+        assert_eq!(resolve_editor().unwrap(), vec!["vi"]);
     }
 }
