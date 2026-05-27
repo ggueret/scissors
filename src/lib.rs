@@ -4,12 +4,21 @@
 //! returns the bytes above the scissors line. Modelled on git's
 //! `commit.cleanup=scissors` convention.
 
-use std::io;
-use std::path::PathBuf;
+use std::fs;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Command, ExitStatus};
+use std::time::{Duration, Instant};
+
+use tempfile::Builder;
 use thiserror::Error;
 
 /// The canonical git scissors separator. Everything below it is stripped.
 pub const SCISSORS: &str = "# ------------------------ >8 ------------------------";
+
+/// Editor returning faster than this with an unchanged file is treated as a
+/// silent failure (editor never actually opened).
+const MIN_ELAPSED_MS: u128 = 500;
 
 /// Result of an approval round-trip.
 #[derive(Debug)]
@@ -90,6 +99,68 @@ pub fn resolve_editor() -> Result<Vec<String>, ScissorsError> {
         }
     }
     Ok(vec!["vi".to_string()])
+}
+
+/// Launch the editor on `path`, blocking until it exits. Returns the exit
+/// status and how long it took. A missing editor binary maps to `NoEditor`.
+fn launch_editor(cmd: &[String], path: &Path) -> Result<(ExitStatus, Duration), ScissorsError> {
+    let (program, args) = cmd.split_first().ok_or(ScissorsError::NoEditor)?;
+    let start = Instant::now();
+    let status = Command::new(program)
+        .args(args)
+        .arg(path)
+        .status()
+        .map_err(|e| match e.kind() {
+            io::ErrorKind::NotFound => ScissorsError::NoEditor,
+            _ => ScissorsError::Io(e),
+        })?;
+    Ok((status, start.elapsed()))
+}
+
+/// Open `content` in the user's editor and return the approved bytes.
+///
+/// - `Ok(Outcome::Approved(s))` -- user saved non-empty content.
+/// - `Ok(Outcome::Aborted { .. })` -- user emptied the content above scissors.
+/// - `Err(..)` -- no editor, editor failure, silent failure, or I/O error.
+///   Aborted and the failure cases preserve the draft file for recovery.
+pub fn approve_in_editor(content: &str, context: Option<&str>) -> Result<Outcome, ScissorsError> {
+    let editor = resolve_editor()?;
+    let draft = build_draft(content, context);
+
+    let mut tmp = Builder::new().prefix("scissors-").suffix(".md").tempfile()?;
+    tmp.write_all(draft.as_bytes())?;
+    tmp.flush()?;
+    let path = tmp.path().to_path_buf();
+
+    let (status, elapsed) = launch_editor(&editor, &path)?;
+
+    if !status.success() {
+        let (_f, draft_path) = tmp.keep().map_err(|e| e.error)?;
+        return Err(ScissorsError::EditorFailed {
+            code: status.code().unwrap_or(-1),
+            draft_path,
+        });
+    }
+
+    let raw_after = fs::read_to_string(&path)?;
+    let final_content = strip_scissors(&raw_after);
+    let unchanged = final_content == content.trim_end();
+
+    if unchanged && elapsed.as_millis() < MIN_ELAPSED_MS {
+        let (_f, draft_path) = tmp.keep().map_err(|e| e.error)?;
+        return Err(ScissorsError::SilentFailure {
+            elapsed_ms: elapsed.as_millis() as u32,
+            draft_path,
+        });
+    }
+
+    if final_content.trim().is_empty() {
+        let (_f, draft_path) = tmp.keep().map_err(|e| e.error)?;
+        return Ok(Outcome::Aborted { draft_path });
+    }
+
+    // Approved: tmp drops here and the file is removed.
+    Ok(Outcome::Approved(final_content))
 }
 
 #[cfg(test)]
