@@ -8,6 +8,8 @@
 *.egg-info
 __pycache__/
 *.pyc
+# uv lockfile: this is a Rust/maturin project, not uv-managed (no Python deps to lock)
+uv.lock
 
 # macOS
 .DS_Store
