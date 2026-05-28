@@ -29,7 +29,10 @@ jobs:
         with:
           workspaces: fuzz
       - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz --locked --version 0.13.1
+        # --locked omitted: cargo-fuzz 0.13.1's bundled Cargo.lock pins an
+        # ancient rustix that no longer compiles on modern rustc. Letting
+        # cargo resolve fresh deps within SemVer is the safer trade-off here.
+        run: cargo install cargo-fuzz --version 0.13.1
       - name: Smoke fuzz (60s on PR, 5 min on schedule)
         env:
           TARGET: ${{ matrix.target }}
