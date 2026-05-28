@@ -1,0 +1,21 @@
+[package]
+name = "scissors-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.scissors]
+path = ".."
+
+[[bin]]
+name = "strip_scissors"
+path = "fuzz_targets/strip_scissors.rs"
+test = false
+doc = false
+bench = false

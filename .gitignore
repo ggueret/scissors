@@ -1,5 +1,9 @@
 # Rust
 /target
+# cargo-fuzz runtime artifacts (the fuzz/ crate itself is committed)
+/fuzz/target
+/fuzz/corpus
+/fuzz/artifacts
 
 # Python / maturin
 /dist
