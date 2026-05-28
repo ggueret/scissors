@@ -1,0 +1,37 @@
+name: Fuzz
+
+on:
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "0 3 * * *"  # daily 03:00 UTC
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [strip_scissors]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: fuzz
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked --version 0.13.1
+      - name: Smoke fuzz (60s on PR, 5 min on schedule)
+        env:
+          TARGET: ${{ matrix.target }}
+          MAX_TIME: ${{ github.event_name == 'schedule' && '300' || '60' }}
+        run: cargo +nightly fuzz run "$TARGET" -- -max_total_time="$MAX_TIME"
