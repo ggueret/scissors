@@ -30,20 +30,20 @@ pub enum Outcome {
     Aborted { draft_path: PathBuf },
 }
 
-/// Errors from [`approve_in_editor`].
+/// Errors from [`approve_in_editor`] and [`approve_file_in_place`].
 #[derive(Debug, Error)]
 pub enum ScissorsError {
     #[error("no editor available ($VISUAL, $EDITOR unset and editor not found)")]
     NoEditor,
 
-    #[error("editor exited with code {code}; draft preserved at {draft_path}")]
+    #[error("editor exited with code {code}; draft at {draft_path}")]
     EditorFailed { code: i32, draft_path: PathBuf },
 
     #[error(
         "editor returned in {elapsed_ms}ms without changes; it likely never \
          opened. Causes: $EDITOR missing a wait flag (e.g. `code --wait`), a \
          sandbox blocking the editor's IPC, or the binary not on PATH; \
-         draft preserved at {draft_path}"
+         draft at {draft_path}"
     )]
     SilentFailure {
         elapsed_ms: u32,
@@ -166,6 +166,53 @@ pub fn approve_in_editor(content: &str, context: Option<&str>) -> Result<Outcome
     }
 
     // Approved: tmp drops here and the file is removed.
+    Ok(Outcome::Approved(final_content))
+}
+
+/// Open `path` in the user's editor, edited in place. The caller owns `path`:
+/// this never creates or deletes it. On approve, `path` holds the stripped
+/// approved content. On abort or error, the original content is restored to
+/// `path` so nothing is lost.
+pub fn approve_file_in_place(path: &Path, context: Option<&str>) -> Result<Outcome, ScissorsError> {
+    let original = fs::read_to_string(path)?;
+    let editor = resolve_editor()?;
+
+    fs::write(path, build_draft(&original, context))?;
+    let (status, elapsed) = match launch_editor(&editor, path) {
+        Ok(pair) => pair,
+        Err(e) => {
+            let _ = fs::write(path, &original); // best-effort restore
+            return Err(e);
+        }
+    };
+
+    if !status.success() {
+        fs::write(path, &original)?;
+        return Err(ScissorsError::EditorFailed {
+            code: status.code().unwrap_or(-1),
+            draft_path: path.to_path_buf(),
+        });
+    }
+
+    let final_content = strip_scissors(&fs::read_to_string(path)?);
+    let unchanged = final_content == original.trim_end();
+
+    if unchanged && elapsed.as_millis() < MIN_ELAPSED_MS {
+        fs::write(path, &original)?;
+        return Err(ScissorsError::SilentFailure {
+            elapsed_ms: elapsed.as_millis() as u32,
+            draft_path: path.to_path_buf(),
+        });
+    }
+
+    if final_content.trim().is_empty() {
+        fs::write(path, &original)?;
+        return Ok(Outcome::Aborted {
+            draft_path: path.to_path_buf(),
+        });
+    }
+
+    fs::write(path, &final_content)?;
     Ok(Outcome::Approved(final_content))
 }
 

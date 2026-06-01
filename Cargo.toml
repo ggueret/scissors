@@ -37,6 +37,7 @@ shell-words = "1.1"
 assert_cmd = "2.2"
 predicates = "3.1"
 serial_test = "3.4"
+tempfile = "3.27"
 
 [profile.release]
 strip = true
