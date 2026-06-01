@@ -225,3 +225,31 @@ fn in_place_missing_editor_restores_original_exit_2() {
         .stderr(contains("no editor available"));
     assert_eq!(fs::read_to_string(f.path()).unwrap(), "keep me");
 }
+
+#[test]
+fn copy_approve_to_stdout_leaves_original_untouched() {
+    let f = draft_file("source body");
+    scissors()
+        .arg("--copy")
+        .arg(f.path())
+        .env("EDITOR", mock_editor())
+        .env("MOCK_EDITOR_ACTION", "approve")
+        .assert()
+        .success()
+        .stdout(contains("approved content"));
+    assert_eq!(fs::read_to_string(f.path()).unwrap(), "source body");
+}
+
+#[test]
+fn copy_abort_exit_1_leaves_original_untouched() {
+    let f = draft_file("source body");
+    scissors()
+        .arg("--copy")
+        .arg(f.path())
+        .env("EDITOR", mock_editor())
+        .env("MOCK_EDITOR_ACTION", "abort")
+        .assert()
+        .code(1)
+        .stderr(contains("draft preserved at"));
+    assert_eq!(fs::read_to_string(f.path()).unwrap(), "source body");
+}
