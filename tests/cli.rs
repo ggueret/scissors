@@ -8,7 +8,11 @@ fn mock_editor() -> PathBuf {
 }
 
 fn scissors() -> Command {
-    Command::cargo_bin("scissors").unwrap()
+    let mut cmd = Command::cargo_bin("scissors").unwrap();
+    // Editor-flow tests drive the editor via $EDITOR + the mock; the runner's
+    // own $VISUAL (which scissors prefers) must not leak in and override it.
+    cmd.env_remove("VISUAL");
+    cmd
 }
 
 #[test]
