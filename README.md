@@ -46,15 +46,43 @@ your content here
 Edit the content above the line, save, and close. Everything below the
 scissors line is discarded.
 
+## File mode
+
+Pass a file to edit it in place, like `$EDITOR <file>`:
+
+```bash
+scissors notes.md          # opens notes.md, edits it in place
+```
+
+`scissors` never creates or deletes the file you pass; you own its lifecycle.
+On approve, the file holds the stripped content. On abort (you emptied the
+buffer above the scissors line) or on error, the original content is restored,
+so nothing is lost. The outcome is signalled by the exit code (0/1/2); nothing
+is written to stdout in this mode.
+
+Use `--copy` to edit a managed throwaway copy instead, leaving the original
+untouched and printing the approved content to stdout:
+
+```bash
+scissors --copy notes.md > approved.md
+```
+
+In-place mode suits agents and scripts: write the draft to a path, run a bare
+`scissors <path>` (easy to put on an allowlist), then read the file back. No
+pipe and no command substitution are required.
+
+Pass `-` as the file (`scissors -`) to force the stdin/stdout path explicitly;
+omitting the argument does the same.
+
 ## Exit codes
 
 | Code | Meaning |
 |------|---------|
-| `0`  | approved -- content printed to stdout |
+| `0`  | approved -- file written in place (file mode), or content on stdout (stdin / `--copy`) |
 | `1`  | aborted -- you emptied the content above the scissors line |
 | `2`  | error -- no editor available, editor failed, or I/O error |
 
-On abort or error, the draft file is preserved and its path printed to stderr.
+In stdin and `--copy` modes, on abort or error the draft tempfile is preserved and its path is printed to stderr. In file mode, the original content is restored to the same path.
 
 ## Editor resolution
 
