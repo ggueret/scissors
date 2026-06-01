@@ -253,3 +253,31 @@ fn copy_abort_exit_1_leaves_original_untouched() {
         .stderr(contains("draft preserved at"));
     assert_eq!(fs::read_to_string(f.path()).unwrap(), "source body");
 }
+
+#[test]
+fn yes_in_place_is_noop_exit_0() {
+    let f = draft_file("as is");
+    scissors()
+        .arg("--yes")
+        .arg(f.path())
+        .env("EDITOR", "/nonexistent/editor-binary-xyz")
+        .env_remove("VISUAL")
+        .assert()
+        .success();
+    assert_eq!(fs::read_to_string(f.path()).unwrap(), "as is");
+}
+
+#[test]
+fn yes_copy_passes_file_content_to_stdout() {
+    let f = draft_file("verbatim copy");
+    scissors()
+        .arg("--yes")
+        .arg("--copy")
+        .arg(f.path())
+        .env("EDITOR", "/nonexistent/editor-binary-xyz")
+        .env_remove("VISUAL")
+        .assert()
+        .success()
+        .stdout(contains("verbatim copy"));
+    assert_eq!(fs::read_to_string(f.path()).unwrap(), "verbatim copy");
+}
