@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::Parser;
-use scissors::{approve_file_in_place, approve_in_editor, Outcome, ScissorsError};
+use scissors::{approve_file_in_place, approve_in_editor, FileOutcome, Outcome, ScissorsError};
 
 /// Editor-based content approval, git-commit style.
 ///
@@ -43,20 +43,30 @@ fn main() -> ExitCode {
     if let Some(path) = cli.file.as_deref() {
         if path != Path::new("-") && !cli.copy {
             if cli.yes {
-                // Approve as-is: the file already holds the draft, leave it.
-                return ExitCode::SUCCESS;
+                // Approve as-is, but validate the file: the approved content is
+                // whatever the file already holds, so it must exist and be
+                // non-empty. (Without this check --yes silently "succeeded" on
+                // a missing or empty file.)
+                return match fs::read_to_string(path) {
+                    Ok(c) if !c.trim().is_empty() => ExitCode::SUCCESS,
+                    Ok(_) => {
+                        eprintln!("scissors: {} is empty; nothing to approve", path.display());
+                        ExitCode::from(1)
+                    }
+                    Err(e) => {
+                        eprintln!("scissors: cannot read {}: {e}", path.display());
+                        ExitCode::from(2)
+                    }
+                };
             }
             return match approve_file_in_place(path, cli.context.as_deref()) {
-                Ok(Outcome::Approved(_)) => ExitCode::SUCCESS,
-                Ok(Outcome::Aborted { draft_path }) => {
-                    eprintln!(
-                        "scissors: aborted; draft restored at {}",
-                        draft_path.display()
-                    );
+                Ok(FileOutcome::Approved) => ExitCode::SUCCESS,
+                Ok(FileOutcome::Aborted) => {
+                    eprintln!("scissors: aborted; {} left unchanged", path.display());
                     ExitCode::from(1)
                 }
-                Err(err) => {
-                    eprintln!("scissors: {err}");
+                Err(e) => {
+                    eprintln!("scissors: {e}");
                     ExitCode::from(2)
                 }
             };

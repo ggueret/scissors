@@ -30,7 +30,7 @@ pub enum Outcome {
     Aborted { draft_path: PathBuf },
 }
 
-/// Errors from [`approve_in_editor`] and [`approve_file_in_place`].
+/// Errors from [`approve_in_editor`].
 #[derive(Debug, Error)]
 pub enum ScissorsError {
     #[error("no editor available ($VISUAL, $EDITOR unset and editor not found)")]
@@ -50,6 +50,34 @@ pub enum ScissorsError {
         draft_path: PathBuf,
     },
 
+    #[error("io error: {0}")]
+    Io(#[from] io::Error),
+}
+
+/// Outcome of an in-place file approval. The approved content is in the file
+/// itself; on abort the file is left untouched.
+#[derive(Debug)]
+pub enum FileOutcome {
+    Approved,
+    Aborted,
+}
+
+/// Errors from [`approve_file_in_place`]. On every error the target file is
+/// left untouched: editing happens in a sidecar that is discarded on failure.
+#[derive(Debug, Error)]
+pub enum FileError {
+    #[error("no editor available ($VISUAL, $EDITOR unset and editor not found)")]
+    NoEditor,
+    #[error("cannot read {}: {source}", path.display())]
+    Read { path: PathBuf, source: io::Error },
+    #[error("editor exited with code {code}")]
+    EditorExited { code: i32 },
+    #[error(
+        "editor returned in {elapsed_ms}ms without changes; it likely never \
+             opened. Causes: $EDITOR missing a wait flag (e.g. `code --wait`), a \
+             sandbox blocking the editor's IPC, or the binary not on PATH"
+    )]
+    SilentFailure { elapsed_ms: u32 },
     #[error("io error: {0}")]
     Io(#[from] io::Error),
 }
@@ -170,50 +198,81 @@ pub fn approve_in_editor(content: &str, context: Option<&str>) -> Result<Outcome
 }
 
 /// Open `path` in the user's editor, edited in place. The caller owns `path`:
-/// this never creates or deletes it. On approve, `path` holds the stripped
-/// approved content. On abort or error, the original content is restored to
-/// `path` so nothing is lost.
-pub fn approve_file_in_place(path: &Path, context: Option<&str>) -> Result<Outcome, ScissorsError> {
-    let original = fs::read_to_string(path)?;
-    let editor = resolve_editor()?;
+/// this never creates or deletes it.
+///
+/// Editing happens in a sidecar tempfile in the same directory as the target;
+/// the target is never written until the final atomic rename on approve. On
+/// abort or any error the sidecar is discarded and the target is left exactly
+/// as it was.
+///
+/// - `Ok(FileOutcome::Approved)` -- the stripped content was atomically swapped
+///   onto `path`.
+/// - `Ok(FileOutcome::Aborted)` -- user emptied the content; `path` untouched.
+/// - `Err(..)` -- no editor, editor failure, silent failure, or I/O error;
+///   `path` untouched.
+pub fn approve_file_in_place(path: &Path, context: Option<&str>) -> Result<FileOutcome, FileError> {
+    let original = fs::read_to_string(path).map_err(|source| FileError::Read {
+        path: path.to_path_buf(),
+        source,
+    })?;
 
-    fs::write(path, build_draft(&original, context))?;
-    let (status, elapsed) = match launch_editor(&editor, path) {
-        Ok(pair) => pair,
-        Err(e) => {
-            let _ = fs::write(path, &original); // best-effort restore
-            return Err(e);
-        }
-    };
+    // Resolve the real target (write through symlinks) so the sidecar lives on
+    // the same filesystem and the rename is atomic.
+    let target = fs::canonicalize(path).map_err(|source| FileError::Read {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let dir = target.parent().unwrap_or_else(|| Path::new("."));
+
+    let editor = resolve_editor().map_err(|e| match e {
+        ScissorsError::Io(io) => FileError::Io(io),
+        // resolve_editor only ever yields Io.
+        _ => unreachable!("resolve_editor only yields Io"),
+    })?;
+
+    let mut tmp = Builder::new()
+        .prefix(".scissors-")
+        .suffix(".tmp")
+        .tempfile_in(dir)?;
+
+    // Preserve permissions so the rename doesn't change the file's mode.
+    let perms = fs::metadata(&target)?.permissions();
+    fs::set_permissions(tmp.path(), perms)?;
+
+    tmp.write_all(build_draft(&original, context).as_bytes())?;
+    tmp.flush()?;
+
+    let (status, elapsed) = launch_editor(&editor, tmp.path()).map_err(|e| match e {
+        ScissorsError::NoEditor => FileError::NoEditor,
+        ScissorsError::Io(io) => FileError::Io(io),
+        // launch_editor only ever yields NoEditor or Io.
+        _ => unreachable!("launch_editor only yields NoEditor or Io"),
+    })?;
 
     if !status.success() {
-        fs::write(path, &original)?;
-        return Err(ScissorsError::EditorFailed {
+        return Err(FileError::EditorExited {
             code: status.code().unwrap_or(-1),
-            draft_path: path.to_path_buf(),
         });
     }
 
-    let final_content = strip_scissors(&fs::read_to_string(path)?);
+    let final_content = strip_scissors(&fs::read_to_string(tmp.path())?);
     let unchanged = final_content == original.trim_end();
 
     if unchanged && elapsed.as_millis() < MIN_ELAPSED_MS {
-        fs::write(path, &original)?;
-        return Err(ScissorsError::SilentFailure {
+        return Err(FileError::SilentFailure {
             elapsed_ms: elapsed.as_millis() as u32,
-            draft_path: path.to_path_buf(),
         });
     }
 
     if final_content.trim().is_empty() {
-        fs::write(path, &original)?;
-        return Ok(Outcome::Aborted {
-            draft_path: path.to_path_buf(),
-        });
+        return Ok(FileOutcome::Aborted);
     }
 
-    fs::write(path, &final_content)?;
-    Ok(Outcome::Approved(final_content))
+    // Approve: write the stripped content and atomically replace the target.
+    // This persist is the only mutation of the target, and it is atomic.
+    fs::write(tmp.path(), &final_content)?;
+    tmp.persist(&target).map_err(|e| FileError::Io(e.error))?;
+    Ok(FileOutcome::Approved)
 }
 
 #[cfg(test)]

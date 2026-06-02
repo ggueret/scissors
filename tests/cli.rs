@@ -160,7 +160,7 @@ fn in_place_edit_keeps_content_above_scissors() {
 }
 
 #[test]
-fn in_place_abort_restores_original_exit_1() {
+fn in_place_abort_leaves_file_unchanged_exit_1() {
     let f = draft_file("keep me");
     scissors()
         .arg(f.path())
@@ -168,12 +168,12 @@ fn in_place_abort_restores_original_exit_1() {
         .env("MOCK_EDITOR_ACTION", "abort")
         .assert()
         .code(1)
-        .stderr(contains("draft restored at"));
+        .stderr(contains("left unchanged"));
     assert_eq!(fs::read_to_string(f.path()).unwrap(), "keep me");
 }
 
 #[test]
-fn in_place_silent_failure_restores_original_exit_2() {
+fn in_place_silent_failure_leaves_file_unchanged_exit_2() {
     let f = draft_file("untouched");
     scissors()
         .arg(f.path())
@@ -263,8 +263,35 @@ fn yes_in_place_is_noop_exit_0() {
         .env("EDITOR", "/nonexistent/editor-binary-xyz")
         .env_remove("VISUAL")
         .assert()
-        .success();
+        .success()
+        .stdout(is_empty());
     assert_eq!(fs::read_to_string(f.path()).unwrap(), "as is");
+}
+
+#[test]
+fn yes_in_place_missing_file_exits_2() {
+    // No draft_file: use a path that does not exist.
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("nope.md");
+    scissors()
+        .arg("--yes")
+        .arg(&missing)
+        .env_remove("VISUAL")
+        .assert()
+        .code(2)
+        .stderr(contains("cannot read"));
+}
+
+#[test]
+fn yes_in_place_empty_file_exits_1() {
+    let f = draft_file("");
+    scissors()
+        .arg("--yes")
+        .arg(f.path())
+        .env_remove("VISUAL")
+        .assert()
+        .code(1)
+        .stderr(contains("empty"));
 }
 
 #[test]
