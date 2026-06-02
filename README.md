@@ -54,11 +54,15 @@ Pass a file to edit it in place, like `$EDITOR <file>`:
 scissors notes.md          # opens notes.md, edits it in place
 ```
 
-`scissors` never creates or deletes the file you pass; you own its lifecycle.
-On approve, the file holds the stripped content. On abort (you emptied the
-buffer above the scissors line) or on error, the original content is restored,
-so nothing is lost. The outcome is signalled by the exit code (0/1/2); nothing
-is written to stdout in this mode.
+On approve, the approved content atomically replaces the file. On abort (you
+emptied the buffer above the scissors line) or on any error, the file is left
+exactly as it was: editing happens in a sidecar tempfile in the same directory,
+and the file is never touched until the final atomic rename, so it is never left
+half-written even if `scissors` is interrupted mid-edit. The atomic replace
+gives the file a new inode, so hard links break and a symlink is written through
+to its target. `scissors` prints the sidecar path to stderr at launch, so you
+can reopen it if you lose the editor window. The outcome is signalled by the
+exit code (0/1/2); nothing is written to stdout in this mode.
 
 Use `--copy` to edit a managed throwaway copy instead, leaving the original
 untouched and printing the approved content to stdout:
@@ -82,7 +86,7 @@ omitting the argument does the same.
 | `1`  | aborted -- you emptied the content above the scissors line |
 | `2`  | error -- no editor available, editor failed, or I/O error |
 
-In stdin and `--copy` modes, on abort or error the draft tempfile is preserved and its path is printed to stderr. In file mode, the original content is restored to the same path.
+In stdin and `--copy` modes, on abort or error the draft tempfile is preserved and its path is printed to stderr. In file mode, on abort or error the file is left unchanged (the edit happens in a sidecar that is discarded).
 
 ## Editor resolution
 

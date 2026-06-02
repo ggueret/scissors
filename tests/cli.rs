@@ -308,3 +308,56 @@ fn yes_copy_passes_file_content_to_stdout() {
         .stdout(contains("verbatim copy"));
     assert_eq!(fs::read_to_string(f.path()).unwrap(), "verbatim copy");
 }
+
+#[test]
+fn in_place_nonexistent_file_exits_2_with_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("nope.md");
+    scissors()
+        .arg(&missing)
+        .env("EDITOR", mock_editor())
+        .env("MOCK_EDITOR_ACTION", "approve")
+        .assert()
+        .code(2)
+        .stderr(contains("cannot read"));
+}
+
+#[test]
+fn copy_nonexistent_file_exits_2_with_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("nope.md");
+    scissors()
+        .arg("--copy")
+        .arg(&missing)
+        .env("EDITOR", mock_editor())
+        .env("MOCK_EDITOR_ACTION", "approve")
+        .assert()
+        .code(2)
+        .stderr(contains("cannot read"));
+}
+
+#[test]
+fn copy_dash_reads_stdin() {
+    // `--copy -` has no real file to protect; the `-` sentinel routes to stdin.
+    scissors()
+        .arg("--copy")
+        .arg("-")
+        .env("EDITOR", mock_editor())
+        .env("MOCK_EDITOR_ACTION", "approve")
+        .write_stdin("via copy dash")
+        .assert()
+        .success()
+        .stdout(contains("approved content"));
+}
+
+#[test]
+fn in_place_prints_sidecar_path_on_stderr() {
+    let f = draft_file("hello");
+    scissors()
+        .arg(f.path())
+        .env("EDITOR", mock_editor())
+        .env("MOCK_EDITOR_ACTION", "approve")
+        .assert()
+        .success()
+        .stderr(contains("editing"));
+}

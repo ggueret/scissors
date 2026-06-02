@@ -242,6 +242,8 @@ pub fn approve_file_in_place(path: &Path, context: Option<&str>) -> Result<FileO
     tmp.write_all(build_draft(&original, context).as_bytes())?;
     tmp.flush()?;
 
+    eprintln!("scissors: editing {}", tmp.path().display());
+
     let (status, elapsed) = launch_editor(&editor, tmp.path()).map_err(|e| match e {
         ScissorsError::NoEditor => FileError::NoEditor,
         ScissorsError::Io(io) => FileError::Io(io),
