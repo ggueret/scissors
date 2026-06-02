@@ -168,7 +168,8 @@ fn in_place_abort_leaves_file_unchanged_exit_1() {
         .env("MOCK_EDITOR_ACTION", "abort")
         .assert()
         .code(1)
-        .stderr(contains("left unchanged"));
+        .stderr(contains("left unchanged"))
+        .stderr(contains(f.path().to_str().unwrap()));
     assert_eq!(fs::read_to_string(f.path()).unwrap(), "keep me");
 }
 
@@ -186,7 +187,7 @@ fn in_place_silent_failure_leaves_file_unchanged_exit_2() {
 }
 
 #[test]
-fn in_place_editor_failure_restores_original_exit_2() {
+fn in_place_editor_failure_leaves_file_unchanged_exit_2() {
     let f = draft_file("safe");
     scissors()
         .arg(f.path())
@@ -295,6 +296,18 @@ fn yes_in_place_empty_file_exits_1() {
 }
 
 #[test]
+fn yes_in_place_whitespace_only_file_exits_1() {
+    let f = draft_file("   \n");
+    scissors()
+        .arg("--yes")
+        .arg(f.path())
+        .env_remove("VISUAL")
+        .assert()
+        .code(1)
+        .stderr(contains("empty"));
+}
+
+#[test]
 fn yes_copy_passes_file_content_to_stdout() {
     let f = draft_file("verbatim copy");
     scissors()
@@ -359,5 +372,6 @@ fn in_place_prints_sidecar_path_on_stderr() {
         .env("MOCK_EDITOR_ACTION", "approve")
         .assert()
         .success()
-        .stderr(contains("editing"));
+        .stderr(contains("editing"))
+        .stderr(contains(".scissors-"));
 }

@@ -78,6 +78,16 @@ pub enum FileError {
              sandbox blocking the editor's IPC, or the binary not on PATH"
     )]
     SilentFailure { elapsed_ms: u32 },
+    #[error(
+        "failed to replace {}: {source}; your edited draft is kept at {}",
+        target.display(),
+        sidecar.display()
+    )]
+    Persist {
+        target: PathBuf,
+        sidecar: PathBuf,
+        source: io::Error,
+    },
     #[error("io error: {0}")]
     Io(#[from] io::Error),
 }
@@ -226,8 +236,7 @@ pub fn approve_file_in_place(path: &Path, context: Option<&str>) -> Result<FileO
 
     let editor = resolve_editor().map_err(|e| match e {
         ScissorsError::Io(io) => FileError::Io(io),
-        // resolve_editor only ever yields Io.
-        _ => unreachable!("resolve_editor only yields Io"),
+        other => FileError::Io(io::Error::other(other.to_string())),
     })?;
 
     let mut tmp = Builder::new()
@@ -247,8 +256,7 @@ pub fn approve_file_in_place(path: &Path, context: Option<&str>) -> Result<FileO
     let (status, elapsed) = launch_editor(&editor, tmp.path()).map_err(|e| match e {
         ScissorsError::NoEditor => FileError::NoEditor,
         ScissorsError::Io(io) => FileError::Io(io),
-        // launch_editor only ever yields NoEditor or Io.
-        _ => unreachable!("launch_editor only yields NoEditor or Io"),
+        other => FileError::Io(io::Error::other(other.to_string())),
     })?;
 
     if !status.success() {
@@ -257,7 +265,11 @@ pub fn approve_file_in_place(path: &Path, context: Option<&str>) -> Result<FileO
         });
     }
 
-    let final_content = strip_scissors(&fs::read_to_string(tmp.path())?);
+    let raw = fs::read_to_string(tmp.path()).map_err(|source| FileError::Read {
+        path: tmp.path().to_path_buf(),
+        source,
+    })?;
+    let final_content = strip_scissors(&raw);
     let unchanged = final_content == original.trim_end();
 
     if unchanged && elapsed.as_millis() < MIN_ELAPSED_MS {
@@ -273,8 +285,22 @@ pub fn approve_file_in_place(path: &Path, context: Option<&str>) -> Result<FileO
     // Approve: write the stripped content and atomically replace the target.
     // This persist is the only mutation of the target, and it is atomic.
     fs::write(tmp.path(), &final_content)?;
-    tmp.persist(&target).map_err(|e| FileError::Io(e.error))?;
-    Ok(FileOutcome::Approved)
+    match tmp.persist(&target) {
+        Ok(_) => Ok(FileOutcome::Approved),
+        Err(e) => {
+            let source = e.error;
+            // Keep the edited sidecar so the user can recover their work.
+            let sidecar = match e.file.keep() {
+                Ok((_file, path)) => path,
+                Err(keep_err) => return Err(FileError::Io(keep_err.error)),
+            };
+            Err(FileError::Persist {
+                target: target.clone(),
+                sidecar,
+                source,
+            })
+        }
+    }
 }
 
 #[cfg(test)]
