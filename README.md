@@ -6,9 +6,10 @@
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
 
 `scissors` is a Unix CLI primitive for **editor-based content approval**,
-modelled on git's `commit.cleanup=scissors` convention. It reads content from
-stdin, opens it in your editor, and prints back the approved bytes (everything
-above the scissors line) on stdout.
+modelled on git's `commit.cleanup=scissors` convention. It opens your content
+in your editor and keeps the approved bytes (everything above the scissors
+line). Use it as a stdin->stdout filter, or point it at a file to edit in
+place.
 
 ## Install
 
@@ -46,15 +47,42 @@ your content here
 Edit the content above the line, save, and close. Everything below the
 scissors line is discarded.
 
+## File mode
+
+Pass a file to edit it in place, like `$EDITOR <file>`:
+
+```bash
+scissors notes.md          # opens notes.md, edits it in place
+```
+
+On approve, the approved content atomically replaces the file. On abort (you
+emptied the buffer above the scissors line) or on any error, the file is left
+exactly as it was: editing happens in a sidecar tempfile in the same directory,
+and the file is never touched until the final atomic rename, so it is never left
+half-written even if `scissors` is interrupted mid-edit. The atomic replace
+gives the file a new inode, so hard links break and a symlink is written through
+to its target. `scissors` prints the sidecar path to stderr at launch, so you
+can reopen it if you lose the editor window. The outcome is signalled by the
+exit code (0/1/2); nothing is written to stdout in this mode.
+
+To review a file's content without editing it in place, pipe it through the stdin filter instead: `scissors < notes.md > approved.md`.
+
+In-place mode suits agents and scripts: write the draft to a path, run a bare
+`scissors <path>` (easy to put on an allowlist), then read the file back. No
+pipe and no command substitution are required.
+
+Pass `-` as the file (`scissors -`) to force the stdin/stdout path explicitly;
+omitting the argument does the same.
+
 ## Exit codes
 
 | Code | Meaning |
 |------|---------|
-| `0`  | approved -- content printed to stdout |
+| `0`  | approved -- file written in place (file mode), or content on stdout (stdin) |
 | `1`  | aborted -- you emptied the content above the scissors line |
 | `2`  | error -- no editor available, editor failed, or I/O error |
 
-On abort or error, the draft file is preserved and its path printed to stderr.
+In stdin mode, on abort or error the draft tempfile is preserved and its path is printed to stderr. In file mode, on abort or error the file is left unchanged (the edit happens in a sidecar that is discarded).
 
 ## Editor resolution
 

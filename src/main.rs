@@ -1,16 +1,24 @@
+use std::fs;
 use std::io::{self, Read, Write};
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::Parser;
-use scissors::{approve_in_editor, Outcome, ScissorsError};
+use scissors::{approve_file_in_place, approve_in_editor, FileOutcome, Outcome, ScissorsError};
 
 /// Editor-based content approval, git-commit style.
 ///
-/// Reads draft content from stdin, opens it in your editor, and prints the
-/// approved content (everything above the scissors line) to stdout.
+/// With a FILE argument, edits it in place. Without it (or with `-`), reads the
+/// draft from stdin and prints the approved content (everything above the
+/// scissors line) to stdout.
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 struct Cli {
+    /// File to edit in place. The caller owns it: scissors never creates or
+    /// deletes it. Use `-` (or omit) to read the draft from stdin instead.
+    #[arg(value_name = "FILE")]
+    file: Option<PathBuf>,
+
     /// Optional context shown as a footer comment in the editor buffer
     #[arg(long, value_name = "TEXT")]
     context: Option<String>,
@@ -24,6 +32,39 @@ struct Cli {
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
+    // In-place file mode: a real FILE (not the `-` stdin sentinel).
+    if let Some(path) = cli.file.as_deref() {
+        if path != Path::new("-") {
+            if cli.yes {
+                // Approve as-is without an editor: the file must exist and be non-empty.
+                return match fs::read_to_string(path) {
+                    Ok(c) if !c.trim().is_empty() => ExitCode::SUCCESS,
+                    Ok(_) => {
+                        eprintln!("scissors: {} is empty; nothing to approve", path.display());
+                        ExitCode::from(1)
+                    }
+                    Err(e) => {
+                        eprintln!("scissors: cannot read {}: {e}", path.display());
+                        ExitCode::from(2)
+                    }
+                };
+            }
+            return match approve_file_in_place(path, cli.context.as_deref()) {
+                Ok(FileOutcome::Approved) => ExitCode::SUCCESS,
+                Ok(FileOutcome::Aborted) => {
+                    eprintln!("scissors: aborted; {} left unchanged", path.display());
+                    ExitCode::from(1)
+                }
+                Err(e) => {
+                    eprintln!("scissors: {e}");
+                    ExitCode::from(2)
+                }
+            };
+        }
+    }
+
+    // stdin mode (no FILE, or the `-` sentinel): read stdin, approve via a managed
+    // tempfile, print the approved content to stdout.
     let mut content = String::new();
     if let Err(e) = io::stdin().read_to_string(&mut content) {
         eprintln!("scissors: failed to read stdin: {e}");
@@ -31,14 +72,12 @@ fn main() -> ExitCode {
     }
 
     if cli.yes {
-        // Non-interactive approval: emit the content as-is, no editor.
         println!("{}", content.trim_end());
         return ExitCode::SUCCESS;
     }
 
     match approve_in_editor(&content, cli.context.as_deref()) {
         Ok(Outcome::Approved(approved)) => {
-            // Trailing newline for POSIX text composability.
             println!("{approved}");
             io::stdout().flush().ok();
             ExitCode::SUCCESS
