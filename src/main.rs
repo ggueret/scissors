@@ -19,11 +19,6 @@ struct Cli {
     #[arg(value_name = "FILE")]
     file: Option<PathBuf>,
 
-    /// Edit a managed temp copy instead of FILE in place: the original is left
-    /// untouched and the approved content is written to stdout.
-    #[arg(long, requires = "file")]
-    copy: bool,
-
     /// Optional context shown as a footer comment in the editor buffer
     #[arg(long, value_name = "TEXT")]
     context: Option<String>,
@@ -37,16 +32,11 @@ struct Cli {
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
-    // In-place file mode: a real FILE (not the `-` stdin sentinel) and not
-    // --copy. The result stays in the file; nothing is written to stdout, which
-    // keeps a bare `scissors <file>` trivially allowlistable.
+    // In-place file mode: a real FILE (not the `-` stdin sentinel).
     if let Some(path) = cli.file.as_deref() {
-        if path != Path::new("-") && !cli.copy {
+        if path != Path::new("-") {
             if cli.yes {
-                // Approve as-is, but validate the file: the approved content is
-                // whatever the file already holds, so it must exist and be
-                // non-empty. (Without this check --yes silently "succeeded" on
-                // a missing or empty file.)
+                // Approve as-is without an editor: the file must exist and be non-empty.
                 return match fs::read_to_string(path) {
                     Ok(c) if !c.trim().is_empty() => ExitCode::SUCCESS,
                     Ok(_) => {
@@ -73,26 +63,13 @@ fn main() -> ExitCode {
         }
     }
 
-    // stdin mode (no FILE, or the `-` sentinel) or --copy mode (a real FILE
-    // copied into a managed tempfile): read the content, approve through a
-    // scissors-owned tempfile, print to stdout. A real FILE is never touched.
-    let content = match cli.file.as_deref() {
-        Some(path) if path != Path::new("-") => match fs::read_to_string(path) {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("scissors: cannot read {}: {e}", path.display());
-                return ExitCode::from(2);
-            }
-        },
-        _ => {
-            let mut buf = String::new();
-            if let Err(e) = io::stdin().read_to_string(&mut buf) {
-                eprintln!("scissors: failed to read stdin: {e}");
-                return ExitCode::from(2);
-            }
-            buf
-        }
-    };
+    // stdin mode (no FILE, or the `-` sentinel): read stdin, approve via a managed
+    // tempfile, print the approved content to stdout.
+    let mut content = String::new();
+    if let Err(e) = io::stdin().read_to_string(&mut content) {
+        eprintln!("scissors: failed to read stdin: {e}");
+        return ExitCode::from(2);
+    }
 
     if cli.yes {
         println!("{}", content.trim_end());

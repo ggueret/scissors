@@ -6,9 +6,10 @@
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
 
 `scissors` is a Unix CLI primitive for **editor-based content approval**,
-modelled on git's `commit.cleanup=scissors` convention. It reads content from
-stdin, opens it in your editor, and prints back the approved bytes (everything
-above the scissors line) on stdout.
+modelled on git's `commit.cleanup=scissors` convention. It opens your content
+in your editor and keeps the approved bytes (everything above the scissors
+line). Use it as a stdin->stdout filter, or point it at a file to edit in
+place.
 
 ## Install
 
@@ -64,12 +65,7 @@ to its target. `scissors` prints the sidecar path to stderr at launch, so you
 can reopen it if you lose the editor window. The outcome is signalled by the
 exit code (0/1/2); nothing is written to stdout in this mode.
 
-Use `--copy` to edit a managed throwaway copy instead, leaving the original
-untouched and printing the approved content to stdout:
-
-```bash
-scissors --copy notes.md > approved.md
-```
+To review a file's content without editing it in place, pipe it through the stdin filter instead: `scissors < notes.md > approved.md`.
 
 In-place mode suits agents and scripts: write the draft to a path, run a bare
 `scissors <path>` (easy to put on an allowlist), then read the file back. No
@@ -82,11 +78,11 @@ omitting the argument does the same.
 
 | Code | Meaning |
 |------|---------|
-| `0`  | approved -- file written in place (file mode), or content on stdout (stdin / `--copy`) |
+| `0`  | approved -- file written in place (file mode), or content on stdout (stdin) |
 | `1`  | aborted -- you emptied the content above the scissors line |
 | `2`  | error -- no editor available, editor failed, or I/O error |
 
-In stdin and `--copy` modes, on abort or error the draft tempfile is preserved and its path is printed to stderr. In file mode, on abort or error the file is left unchanged (the edit happens in a sidecar that is discarded).
+In stdin mode, on abort or error the draft tempfile is preserved and its path is printed to stderr. In file mode, on abort or error the file is left unchanged (the edit happens in a sidecar that is discarded).
 
 ## Editor resolution
 
