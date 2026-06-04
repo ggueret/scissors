@@ -13,7 +13,12 @@ use std::time::{Duration, Instant};
 use tempfile::Builder;
 use thiserror::Error;
 
-/// The canonical git scissors separator. Everything below it is stripped.
+/// The dashed `>8` bar that marks the cut. Detected as a substring, so the cut
+/// is found even if the footer's `#` prefix is edited or reflowed.
+pub const SCISSORS_MARKER: &str = "------------------------ >8 ------------------------";
+
+/// The canonical git scissors separator (hash-style). Everything below the cut
+/// is stripped. Equals `"# "` + [`SCISSORS_MARKER`].
 pub const SCISSORS: &str = "# ------------------------ >8 ------------------------";
 
 /// Editor returning faster than this with an unchanged file is treated as a
@@ -97,7 +102,7 @@ pub enum FileError {
 pub fn strip_scissors(raw: &str) -> String {
     let mut kept: Vec<&str> = Vec::new();
     for line in raw.lines() {
-        if line.trim_end() == SCISSORS {
+        if line.contains(SCISSORS_MARKER) {
             break;
         }
         kept.push(line);
@@ -328,6 +333,22 @@ mod strip_tests {
     fn scissors_like_but_not_exact_is_ignored() {
         let input = "draft\n# --- >8 --- not the real one\nmore";
         assert_eq!(strip_scissors(input), input.trim_end());
+    }
+
+    #[test]
+    fn cut_is_found_regardless_of_prefix() {
+        // The cut is the >8 marker, not the `# ` prefix: an edited or reflowed
+        // footer line still strips, so the footer never leaks into the output.
+        for prefix in ["", "# ", "   ", "> "] {
+            let input = format!("draft\n{prefix}{SCISSORS_MARKER}\nfooter");
+            assert_eq!(strip_scissors(&input), "draft", "prefix {prefix:?}");
+        }
+    }
+
+    #[test]
+    fn scissors_const_carries_the_marker() {
+        assert!(SCISSORS.contains(SCISSORS_MARKER));
+        assert_eq!(SCISSORS, format!("# {SCISSORS_MARKER}"));
     }
 }
 
