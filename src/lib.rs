@@ -5,12 +5,12 @@
 //! `commit.cleanup=scissors` convention.
 
 use std::fs;
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 use std::time::{Duration, Instant};
 
-use tempfile::Builder;
+use tempfile::{Builder, TempDir};
 use thiserror::Error;
 
 /// The dashed `>8` bar that marks the cut. Detected as a substring, so the cut
@@ -163,6 +163,50 @@ fn launch_editor(cmd: &[String], path: &Path) -> Result<(ExitStatus, Duration), 
     Ok((status, start.elapsed()))
 }
 
+/// The fixed editor-buffer filename. Editors that highlight git commit messages
+/// key on this exact name (no extension triggers it), so the `#` footer renders
+/// as dimmed comments wherever the user's `git commit` is dimmed.
+const COMMIT_EDITMSG: &str = "COMMIT_EDITMSG";
+
+/// What an editor round-trip produced, before the draft is persisted or cleaned.
+enum Verdict {
+    Approved(String),
+    Aborted,
+    SilentFailure { elapsed_ms: u32 },
+    EditorFailed { code: i32 },
+}
+
+/// Launch the editor on `path`, then classify the result against `original`.
+fn edit_and_classify(
+    editor: &[String],
+    path: &Path,
+    original: &str,
+) -> Result<Verdict, ScissorsError> {
+    let (status, elapsed) = launch_editor(editor, path)?;
+    if !status.success() {
+        return Ok(Verdict::EditorFailed {
+            code: status.code().unwrap_or(-1),
+        });
+    }
+    let raw = fs::read_to_string(path)?;
+    let final_content = strip_scissors(&raw);
+    if final_content == original.trim_end() && elapsed.as_millis() < MIN_ELAPSED_MS {
+        return Ok(Verdict::SilentFailure {
+            elapsed_ms: elapsed.as_millis() as u32,
+        });
+    }
+    if final_content.trim().is_empty() {
+        return Ok(Verdict::Aborted);
+    }
+    Ok(Verdict::Approved(final_content))
+}
+
+/// Persist the draft directory so the user can recover the file at `path`.
+fn keep_draft(dir: TempDir, path: PathBuf) -> PathBuf {
+    let _ = dir.keep();
+    path
+}
+
 /// Open `content` in the user's editor and return the approved bytes.
 ///
 /// - `Ok(Outcome::Approved(s))` -- user saved non-empty content.
@@ -171,54 +215,35 @@ fn launch_editor(cmd: &[String], path: &Path) -> Result<(ExitStatus, Duration), 
 ///   Aborted and the failure cases preserve the draft file for recovery.
 pub fn approve_in_editor(content: &str, context: Option<&str>) -> Result<Outcome, ScissorsError> {
     let editor = resolve_editor()?;
-    let draft = build_draft(content, context);
 
-    let mut tmp = Builder::new()
-        .prefix("scissors-")
-        .suffix(".md")
-        .tempfile()?;
-    tmp.write_all(draft.as_bytes())?;
-    tmp.flush()?;
-    let path = tmp.path().to_path_buf();
+    // Edit in a COMMIT_EDITMSG file inside a tempdir so the editor dims the footer.
+    let dir = Builder::new().prefix("scissors-").tempdir()?;
+    let path = dir.path().join(COMMIT_EDITMSG);
+    fs::write(&path, build_draft(content, context).as_bytes())?;
 
-    let (status, elapsed) = launch_editor(&editor, &path)?;
-
-    if !status.success() {
-        let (_f, draft_path) = tmp.keep().map_err(|e| e.error)?;
-        return Err(ScissorsError::EditorFailed {
-            code: status.code().unwrap_or(-1),
-            draft_path,
-        });
+    match edit_and_classify(&editor, &path, content)? {
+        Verdict::Approved(approved) => Ok(Outcome::Approved(approved)),
+        Verdict::Aborted => Ok(Outcome::Aborted {
+            draft_path: keep_draft(dir, path),
+        }),
+        Verdict::SilentFailure { elapsed_ms } => Err(ScissorsError::SilentFailure {
+            elapsed_ms,
+            draft_path: keep_draft(dir, path),
+        }),
+        Verdict::EditorFailed { code } => Err(ScissorsError::EditorFailed {
+            code,
+            draft_path: keep_draft(dir, path),
+        }),
     }
-
-    let raw_after = fs::read_to_string(&path)?;
-    let final_content = strip_scissors(&raw_after);
-    let unchanged = final_content == content.trim_end();
-
-    if unchanged && elapsed.as_millis() < MIN_ELAPSED_MS {
-        let (_f, draft_path) = tmp.keep().map_err(|e| e.error)?;
-        return Err(ScissorsError::SilentFailure {
-            elapsed_ms: elapsed.as_millis() as u32,
-            draft_path,
-        });
-    }
-
-    if final_content.trim().is_empty() {
-        let (_f, draft_path) = tmp.keep().map_err(|e| e.error)?;
-        return Ok(Outcome::Aborted { draft_path });
-    }
-
-    // Approved: tmp drops here and the file is removed.
-    Ok(Outcome::Approved(final_content))
 }
 
 /// Open `path` in the user's editor, edited in place. The caller owns `path`:
 /// this never creates or deletes it.
 ///
-/// Editing happens in a sidecar tempfile in the same directory as the target;
-/// the target is never written until the final atomic rename on approve. On
-/// abort or any error the sidecar is discarded and the target is left exactly
-/// as it was.
+/// Editing happens in a `COMMIT_EDITMSG` sidecar inside a temp directory beside
+/// the target (so the editor dims the footer); the target is never written until
+/// the final atomic rename on approve. On abort or any error the sidecar is
+/// discarded and the target is left exactly as it was.
 ///
 /// - `Ok(FileOutcome::Approved)` -- the stripped content was atomically swapped
 ///   onto `path`.
@@ -237,74 +262,51 @@ pub fn approve_file_in_place(path: &Path, context: Option<&str>) -> Result<FileO
         path: path.to_path_buf(),
         source,
     })?;
-    let dir = target.parent().unwrap_or_else(|| Path::new("."));
+    let parent = target.parent().unwrap_or_else(|| Path::new("."));
 
     let editor = resolve_editor().map_err(|e| match e {
         ScissorsError::Io(io) => FileError::Io(io),
         other => FileError::Io(io::Error::other(other.to_string())),
     })?;
 
-    let mut tmp = Builder::new()
-        .prefix(".scissors-")
-        .suffix(".tmp")
-        .tempfile_in(dir)?;
+    // Edit in a COMMIT_EDITMSG file inside a tempdir beside the target; the target
+    // is untouched until the atomic rename on approve.
+    let dir = Builder::new().prefix(".scissors-").tempdir_in(parent)?;
+    let sidecar = dir.path().join(COMMIT_EDITMSG);
+    fs::write(&sidecar, build_draft(&original, context).as_bytes())?;
+    // Preserve permissions so the replace doesn't change the file's mode.
+    fs::set_permissions(&sidecar, fs::metadata(&target)?.permissions())?;
 
-    // Preserve permissions so the rename doesn't change the file's mode.
-    let perms = fs::metadata(&target)?.permissions();
-    fs::set_permissions(tmp.path(), perms)?;
+    eprintln!("scissors: editing {}", sidecar.display());
 
-    tmp.write_all(build_draft(&original, context).as_bytes())?;
-    tmp.flush()?;
-
-    eprintln!("scissors: editing {}", tmp.path().display());
-
-    let (status, elapsed) = launch_editor(&editor, tmp.path()).map_err(|e| match e {
+    let verdict = edit_and_classify(&editor, &sidecar, &original).map_err(|e| match e {
         ScissorsError::NoEditor => FileError::NoEditor,
         ScissorsError::Io(io) => FileError::Io(io),
         other => FileError::Io(io::Error::other(other.to_string())),
     })?;
 
-    if !status.success() {
-        return Err(FileError::EditorExited {
-            code: status.code().unwrap_or(-1),
-        });
-    }
-
-    let raw = fs::read_to_string(tmp.path()).map_err(|source| FileError::Read {
-        path: tmp.path().to_path_buf(),
-        source,
-    })?;
-    let final_content = strip_scissors(&raw);
-    let unchanged = final_content == original.trim_end();
-
-    if unchanged && elapsed.as_millis() < MIN_ELAPSED_MS {
-        return Err(FileError::SilentFailure {
-            elapsed_ms: elapsed.as_millis() as u32,
-        });
-    }
-
-    if final_content.trim().is_empty() {
-        return Ok(FileOutcome::Aborted);
-    }
-
-    // Approve: write the stripped content and atomically replace the target.
-    // This persist is the only mutation of the target, and it is atomic.
-    fs::write(tmp.path(), &final_content)?;
-    match tmp.persist(&target) {
-        Ok(_) => Ok(FileOutcome::Approved),
-        Err(e) => {
-            let source = e.error;
-            // Keep the edited sidecar so the user can recover their work.
-            let sidecar = match e.file.keep() {
-                Ok((_file, path)) => path,
-                Err(keep_err) => return Err(FileError::Io(keep_err.error)),
-            };
-            Err(FileError::Persist {
-                target: target.clone(),
-                sidecar,
-                source,
-            })
+    match verdict {
+        Verdict::Approved(content) => {
+            // Write the stripped content and atomically replace the target.
+            fs::write(&sidecar, &content)?;
+            match fs::rename(&sidecar, &target) {
+                Ok(()) => Ok(FileOutcome::Approved),
+                Err(source) => {
+                    // Keep the edited sidecar so the user can recover their work.
+                    let _ = dir.keep();
+                    Err(FileError::Persist {
+                        target,
+                        sidecar,
+                        source,
+                    })
+                }
+            }
         }
+        // Abort/error: the tempdir (and the sidecar in it) is discarded on drop;
+        // the target is left exactly as it was.
+        Verdict::Aborted => Ok(FileOutcome::Aborted),
+        Verdict::SilentFailure { elapsed_ms } => Err(FileError::SilentFailure { elapsed_ms }),
+        Verdict::EditorFailed { code } => Err(FileError::EditorExited { code }),
     }
 }
 
