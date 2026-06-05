@@ -304,3 +304,43 @@ fn in_place_prints_sidecar_path_on_stderr() {
         .stderr(contains("editing"))
         .stderr(contains(".scissors-"));
 }
+
+#[test]
+fn in_place_edits_commit_editmsg_with_hash_footer() {
+    // Even a .md target is edited in a COMMIT_EDITMSG buffer (uniform footer).
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("note.md");
+    fs::write(&target, "body text").unwrap();
+    let dump = dir.path().join("dump.txt");
+    scissors()
+        .arg(&target)
+        .env("EDITOR", mock_editor())
+        .env("MOCK_EDITOR_ACTION", "approve")
+        .env("MOCK_EDITOR_DUMP", &dump)
+        .assert()
+        .success()
+        .stderr(contains("COMMIT_EDITMSG"));
+    let buf = fs::read_to_string(&dump).unwrap();
+    assert!(buf.contains("\n# "), "footer must be hash comments: {buf}");
+    assert!(buf.contains(">8"), "marker present: {buf}");
+    assert_eq!(
+        fs::read_to_string(&target).unwrap().trim_end(),
+        "approved content"
+    );
+}
+
+#[test]
+fn stdin_edits_with_hash_footer() {
+    let dir = tempfile::tempdir().unwrap();
+    let dump = dir.path().join("dump.txt");
+    scissors()
+        .env("EDITOR", mock_editor())
+        .env("MOCK_EDITOR_ACTION", "approve")
+        .env("MOCK_EDITOR_DUMP", &dump)
+        .write_stdin("hello")
+        .assert()
+        .success()
+        .stdout(contains("approved content"));
+    let buf = fs::read_to_string(&dump).unwrap();
+    assert!(buf.contains("\n# "), "footer must be hash comments: {buf}");
+}

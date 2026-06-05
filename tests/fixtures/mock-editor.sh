@@ -3,7 +3,12 @@
 # The file to edit is the last argument. Behaviour is set via env vars:
 #   MOCK_EDITOR_ACTION = approve | edit | abort | noop   (default: noop)
 #   MOCK_EDITOR_EXIT   = exit code                       (default: 0)
+#   MOCK_EDITOR_DUMP   = path to copy the received buffer to, before acting
 file="$1"
+# Capture the buffer the editor received (the draft scissors wrote), if asked.
+if [ -n "${MOCK_EDITOR_DUMP:-}" ]; then
+  cp "$file" "$MOCK_EDITOR_DUMP"
+fi
 case "${MOCK_EDITOR_ACTION:-noop}" in
   approve)
     # Replace the whole buffer with fresh approved content.
