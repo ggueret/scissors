@@ -47,6 +47,15 @@ your content here
 Edit the content above the line, save, and close. Everything below the
 scissors line is discarded.
 
+## The editor buffer
+
+`scissors` opens the draft as a file named `COMMIT_EDITMSG`, the same name
+`git commit` uses. Editors that dim git commit messages (VS Code, Vim, Emacs
+with Magit, ...) dim this buffer the same way, so the `#` footer reads as
+greyed-out comments while you edit and the body stays plain. The cut is located
+by the `>8` marker, so the footer is detected and stripped even if its `#`
+prefix gets altered.
+
 ## File mode
 
 Pass a file to edit it in place, like `$EDITOR <file>`:
@@ -57,9 +66,10 @@ scissors notes.md          # opens notes.md, edits it in place
 
 On approve, the approved content atomically replaces the file. On abort (you
 emptied the buffer above the scissors line) or on any error, the file is left
-exactly as it was: editing happens in a sidecar tempfile in the same directory,
-and the file is never touched until the final atomic rename, so it is never left
-half-written even if `scissors` is interrupted mid-edit. The atomic replace
+exactly as it was: editing happens in a `COMMIT_EDITMSG` sidecar in a temp
+directory beside the target, and the file is never touched until the final
+atomic rename, so it is never left half-written even if `scissors` is
+interrupted mid-edit. The atomic replace
 gives the file a new inode, so hard links break and a symlink is written through
 to its target. `scissors` prints the sidecar path to stderr at launch, so you
 can reopen it if you lose the editor window. The outcome is signalled by the
