@@ -344,3 +344,21 @@ fn stdin_edits_with_hash_footer() {
     let buf = fs::read_to_string(&dump).unwrap();
     assert!(buf.contains("\n# "), "footer must be hash comments: {buf}");
 }
+
+#[test]
+fn in_place_refuses_a_target_that_already_contains_the_marker() {
+    // A file already holding the scissors line is refused before the editor
+    // opens, so its content can never be silently truncated on the disk write.
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("notes.md");
+    let content = "keep me\n# ------------------------ >8 ------------------------\nand me\n";
+    fs::write(&target, content).unwrap();
+    scissors()
+        .arg(&target)
+        .env("EDITOR", mock_editor())
+        .env("MOCK_EDITOR_ACTION", "approve")
+        .assert()
+        .code(2)
+        .stderr(contains("already contains the scissors line"));
+    assert_eq!(fs::read_to_string(&target).unwrap(), content);
+}
