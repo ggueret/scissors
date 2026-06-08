@@ -23,7 +23,7 @@ fn version_flag_prints_version() {
         .arg("--version")
         .assert()
         .success()
-        .stdout(contains("scissors 0.1.0"));
+        .stdout(contains(format!("scissors {}", env!("CARGO_PKG_VERSION"))));
 }
 
 #[test]
@@ -361,4 +361,102 @@ fn in_place_refuses_a_target_that_already_contains_the_marker() {
         .code(2)
         .stderr(contains("already contains the scissors line"));
     assert_eq!(fs::read_to_string(&target).unwrap(), content);
+}
+
+#[cfg(unix)]
+#[test]
+fn in_place_preserves_mode_bits() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("note.md");
+    fs::write(&target, "body text").unwrap();
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o640)).unwrap();
+    scissors()
+        .arg(&target)
+        .env("EDITOR", mock_editor())
+        .env("MOCK_EDITOR_ACTION", "approve")
+        .assert()
+        .success();
+    let mode = fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o640, "mode must survive the atomic replace");
+}
+
+#[cfg(unix)]
+#[test]
+fn in_place_through_symlink_rewrites_target_and_keeps_link() {
+    use std::os::unix::fs::{symlink, MetadataExt};
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("real.md");
+    let link = dir.path().join("link.md");
+    fs::write(&target, "body text").unwrap();
+    symlink(&target, &link).unwrap();
+    let ino_before = fs::metadata(&target).unwrap().ino();
+    scissors()
+        .arg(&link)
+        .env("EDITOR", mock_editor())
+        .env("MOCK_EDITOR_ACTION", "approve")
+        .assert()
+        .success();
+    // The link survives as a symlink to the same path...
+    assert!(fs::symlink_metadata(&link)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert_eq!(fs::read_link(&link).unwrap(), target);
+    // ...the target was rewritten through it, on a new inode.
+    assert_eq!(
+        fs::read_to_string(&target).unwrap().trim_end(),
+        "approved content"
+    );
+    assert_ne!(fs::metadata(&target).unwrap().ino(), ino_before);
+}
+
+#[test]
+fn in_place_rejects_non_utf8_and_leaves_file_intact() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("data.bin");
+    let raw = [0xff, 0xfe, 0x00, 0x9c];
+    fs::write(&target, raw).unwrap();
+    scissors()
+        .arg(&target)
+        .env("EDITOR", mock_editor())
+        .env("MOCK_EDITOR_ACTION", "approve")
+        .assert()
+        .code(2)
+        .stderr(contains("cannot read"));
+    assert_eq!(
+        fs::read(&target).unwrap(),
+        raw,
+        "non-UTF-8 target must be byte-identical"
+    );
+}
+
+#[test]
+fn stdin_rejects_non_utf8_no_stdout() {
+    scissors()
+        .env("EDITOR", mock_editor())
+        .env("MOCK_EDITOR_ACTION", "approve")
+        .write_stdin(vec![0xff, 0xfe, 0x00, 0x9c])
+        .assert()
+        .code(2)
+        .stdout(is_empty());
+}
+
+#[test]
+fn in_place_context_appears_in_footer() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("note.md");
+    fs::write(&target, "body").unwrap();
+    let dump = dir.path().join("dump.txt");
+    scissors()
+        .arg(&target)
+        .arg("--context")
+        .arg("Issue #26 reply")
+        .env("EDITOR", mock_editor())
+        .env("MOCK_EDITOR_ACTION", "approve")
+        .env("MOCK_EDITOR_DUMP", &dump)
+        .assert()
+        .success();
+    let buf = fs::read_to_string(&dump).unwrap();
+    assert!(buf.contains("# Context: Issue #26 reply"), "got: {buf}");
 }
