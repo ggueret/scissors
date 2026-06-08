@@ -13,12 +13,8 @@ use std::time::{Duration, Instant};
 use tempfile::{Builder, TempDir};
 use thiserror::Error;
 
-/// The dashed `>8` bar that marks the cut. Detected as a substring, so the cut
-/// is found even if the footer's `#` prefix is edited or reflowed.
-pub const SCISSORS_MARKER: &str = "------------------------ >8 ------------------------";
-
-/// The canonical git scissors separator (hash-style). Everything below the cut
-/// is stripped. Equals `"# "` + [`SCISSORS_MARKER`].
+/// The git scissors separator. `build_draft` ends the footer with this exact
+/// line; `strip_scissors` cuts at its last occurrence.
 pub const SCISSORS: &str = "# ------------------------ >8 ------------------------";
 
 /// Editor returning faster than this with an unchanged file is treated as a
@@ -75,6 +71,12 @@ pub enum FileError {
     NoEditor,
     #[error("cannot read {}: {source}", path.display())]
     Read { path: PathBuf, source: io::Error },
+    #[error(
+        "{} already contains the scissors line (line {line}); refusing to edit \
+         it in place to avoid discarding content below it",
+        path.display()
+    )]
+    MarkerInInput { path: PathBuf, line: usize },
     #[error("editor exited with code {code}")]
     EditorExited { code: i32 },
     #[error(
@@ -97,17 +99,17 @@ pub enum FileError {
     Io(#[from] io::Error),
 }
 
-/// Return everything above the scissors line, trimmed. If there is no
-/// scissors line, return the whole input trimmed.
+/// Return everything above the *last* scissors line, trimmed. If there is no
+/// scissors line, return the whole input trimmed. Cutting at the last occurrence
+/// (the footer is always appended last) preserves a body that itself contains a
+/// scissors line, instead of silently discarding everything below it.
 pub fn strip_scissors(raw: &str) -> String {
-    let mut kept: Vec<&str> = Vec::new();
-    for line in raw.lines() {
-        if line.contains(SCISSORS_MARKER) {
-            break;
-        }
-        kept.push(line);
-    }
-    kept.join("\n").trim_end().to_string()
+    let lines: Vec<&str> = raw.lines().collect();
+    let cut = lines
+        .iter()
+        .rposition(|l| l.trim_end() == SCISSORS)
+        .unwrap_or(lines.len());
+    lines[..cut].join("\n").trim_end().to_string()
 }
 
 /// Assemble the editor buffer: the content, a blank line, then the scissors
@@ -256,6 +258,16 @@ pub fn approve_file_in_place(path: &Path, context: Option<&str>) -> Result<FileO
         source,
     })?;
 
+    // Fail closed: a target that already holds the scissors line would let the
+    // editor (or a footer deletion) leave a marker that strips away real content
+    // on the permanent on-disk write. Refuse before touching anything.
+    if let Some(i) = original.lines().position(|l| l.trim_end() == SCISSORS) {
+        return Err(FileError::MarkerInInput {
+            path: path.to_path_buf(),
+            line: i + 1,
+        });
+    }
+
     // Resolve the real target (write through symlinks) so the sidecar lives on
     // the same filesystem and the rename is atomic.
     let target = fs::canonicalize(path).map_err(|source| FileError::Read {
@@ -338,19 +350,17 @@ mod strip_tests {
     }
 
     #[test]
-    fn cut_is_found_regardless_of_prefix() {
-        // The cut is the >8 marker, not the `# ` prefix: an edited or reflowed
-        // footer line still strips, so the footer never leaks into the output.
-        for prefix in ["", "# ", "   ", "> "] {
-            let input = format!("draft\n{prefix}{SCISSORS_MARKER}\nfooter");
-            assert_eq!(strip_scissors(&input), "draft", "prefix {prefix:?}");
-        }
+    fn round_trips_a_body_that_contains_a_marker() {
+        // build_draft appends the footer last, so its marker is the LAST one;
+        // cutting there preserves a body that itself contains a marker line.
+        let body = format!("keep this\n{SCISSORS}\nand this too");
+        assert_eq!(strip_scissors(&build_draft(&body, None)), body);
     }
 
     #[test]
-    fn scissors_const_carries_the_marker() {
-        assert!(SCISSORS.contains(SCISSORS_MARKER));
-        assert_eq!(SCISSORS, format!("# {SCISSORS_MARKER}"));
+    fn cuts_at_the_last_marker_not_the_first() {
+        let input = format!("a\n{SCISSORS}\nb\n{SCISSORS}\nc");
+        assert_eq!(strip_scissors(&input), format!("a\n{SCISSORS}\nb"));
     }
 }
 
