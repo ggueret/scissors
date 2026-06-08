@@ -3,6 +3,9 @@
 //! Opens content in the user's editor, lets them edit or approve it, and
 //! returns the bytes above the scissors line. Modelled on git's
 //! `commit.cleanup=scissors` convention.
+//!
+//! Input is UTF-8 text only: non-UTF-8 bytes surface as an I/O error before
+//! anything is written.
 
 use std::fs;
 use std::io;
@@ -14,14 +17,56 @@ use tempfile::{Builder, TempDir};
 use thiserror::Error;
 
 /// The git scissors separator. `build_draft` ends the footer with this exact
-/// line; `strip_scissors` cuts at its last occurrence.
+/// line; [`strip_scissors`] cuts at its last occurrence.
 pub const SCISSORS: &str = "# ------------------------ >8 ------------------------";
 
 /// Editor returning faster than this with an unchanged file is treated as a
 /// silent failure (editor never actually opened).
 const MIN_ELAPSED_MS: u128 = 500;
 
-/// Result of an approval round-trip.
+/// The fixed editor-buffer filename. Editors that highlight git commit messages
+/// key on this exact name (no extension triggers it), so the `#` footer renders
+/// as dimmed comments wherever the user's `git commit` is dimmed.
+const COMMIT_EDITMSG: &str = "COMMIT_EDITMSG";
+
+/// True for a line that is exactly the scissors separator (trailing whitespace
+/// ignored). The one predicate [`strip_scissors`] and the file-mode guard share.
+fn is_scissors_line(line: &str) -> bool {
+    line.trim_end() == SCISSORS
+}
+
+/// Optional knobs for [`approve_in_editor`] and [`approve_file_in_place`].
+///
+/// Construct via [`Options::new`]/[`Options::default`] and the builder methods.
+/// Marked `#[non_exhaustive]` so future options stay additive (non-breaking).
+///
+/// ```
+/// let opts = scissors::Options::new().context("Issue #26 reply");
+/// ```
+#[derive(Debug, Default, Clone)]
+#[non_exhaustive]
+pub struct Options<'a> {
+    /// One-line label shown as a footer comment in the editor buffer so the
+    /// user knows which draft they are reviewing.
+    pub context: Option<&'a str>,
+}
+
+impl<'a> Options<'a> {
+    /// An empty set of options.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the context label shown in the editor footer.
+    #[must_use]
+    pub fn context(mut self, context: &'a str) -> Self {
+        self.context = Some(context);
+        self
+    }
+}
+
+/// Result of a stdin-mode approval round-trip.
 #[derive(Debug)]
 pub enum Outcome {
     /// User saved with non-empty content above the scissors line.
@@ -31,7 +76,8 @@ pub enum Outcome {
     Aborted { draft_path: PathBuf },
 }
 
-/// Errors from [`approve_in_editor`].
+/// Errors from [`approve_in_editor`]. The failure cases preserve the draft file
+/// and report its path so the user can recover their work.
 #[derive(Debug, Error)]
 pub enum ScissorsError {
     #[error("no editor available ($VISUAL, $EDITOR unset and editor not found)")]
@@ -64,7 +110,8 @@ pub enum FileOutcome {
 }
 
 /// Errors from [`approve_file_in_place`]. On every error the target file is
-/// left untouched: editing happens in a sidecar that is discarded on failure.
+/// left exactly as it was: editing happens in a sidecar that is discarded on
+/// failure.
 #[derive(Debug, Error)]
 pub enum FileError {
     #[error("no editor available ($VISUAL, $EDITOR unset and editor not found)")]
@@ -77,12 +124,14 @@ pub enum FileError {
         path.display()
     )]
     MarkerInInput { path: PathBuf, line: usize },
+    #[error("cannot prepare the edit buffer in {}: {source}", dir.display())]
+    Prepare { dir: PathBuf, source: io::Error },
     #[error("editor exited with code {code}")]
-    EditorExited { code: i32 },
+    EditorFailed { code: i32 },
     #[error(
         "editor returned in {elapsed_ms}ms without changes; it likely never \
-             opened. Causes: $EDITOR missing a wait flag (e.g. `code --wait`), a \
-             sandbox blocking the editor's IPC, or the binary not on PATH"
+         opened. Causes: $EDITOR missing a wait flag (e.g. `code --wait`), a \
+         sandbox blocking the editor's IPC, or the binary not on PATH"
     )]
     SilentFailure { elapsed_ms: u32 },
     #[error(
@@ -99,6 +148,22 @@ pub enum FileError {
     Io(#[from] io::Error),
 }
 
+/// Total, lossless conversion of a stdin-mode editor error onto the file-mode
+/// surface. The stdin-only `draft_path` is dropped (file mode keeps no draft;
+/// the sidecar path is reported by [`FileError::Persist`] instead).
+impl From<ScissorsError> for FileError {
+    fn from(e: ScissorsError) -> Self {
+        match e {
+            ScissorsError::NoEditor => FileError::NoEditor,
+            ScissorsError::Io(io) => FileError::Io(io),
+            ScissorsError::EditorFailed { code, .. } => FileError::EditorFailed { code },
+            ScissorsError::SilentFailure { elapsed_ms, .. } => {
+                FileError::SilentFailure { elapsed_ms }
+            }
+        }
+    }
+}
+
 /// Return everything above the *last* scissors line, trimmed. If there is no
 /// scissors line, return the whole input trimmed. Cutting at the last occurrence
 /// (the footer is always appended last) preserves a body that itself contains a
@@ -107,14 +172,14 @@ pub fn strip_scissors(raw: &str) -> String {
     let lines: Vec<&str> = raw.lines().collect();
     let cut = lines
         .iter()
-        .rposition(|l| l.trim_end() == SCISSORS)
+        .rposition(|&l| is_scissors_line(l))
         .unwrap_or(lines.len());
     lines[..cut].join("\n").trim_end().to_string()
 }
 
 /// Assemble the editor buffer: the content, a blank line, then the scissors
 /// footer with instructions (and optional context).
-pub fn build_draft(content: &str, context: Option<&str>) -> String {
+fn build_draft(content: &str, context: Option<&str>) -> String {
     let mut out = String::new();
     out.push_str(content.trim_end_matches('\n'));
     out.push_str("\n\n");
@@ -125,14 +190,19 @@ pub fn build_draft(content: &str, context: Option<&str>) -> String {
     out.push_str("# Save and close the editor when done.\n");
     out.push_str("# Empty all content above this line to abort without submitting.\n");
     if let Some(ctx) = context {
-        out.push_str("#\n");
-        out.push_str(&format!("# Context: {ctx}\n"));
+        out.push_str("#\n# Context: ");
+        out.push_str(ctx);
+        out.push('\n');
     }
     out
 }
 
 /// Resolve the editor command, honouring $VISUAL > $EDITOR > `vi`.
 /// Returns the command split into program + args (e.g. `["code", "--wait"]`).
+///
+/// # Errors
+/// [`ScissorsError::Io`] if `$VISUAL`/`$EDITOR` contains unbalanced quotes that
+/// `shell-words` cannot split.
 pub fn resolve_editor() -> Result<Vec<String>, ScissorsError> {
     for var in ["VISUAL", "EDITOR"] {
         if let Ok(val) = std::env::var(var) {
@@ -165,11 +235,6 @@ fn launch_editor(cmd: &[String], path: &Path) -> Result<(ExitStatus, Duration), 
     Ok((status, start.elapsed()))
 }
 
-/// The fixed editor-buffer filename. Editors that highlight git commit messages
-/// key on this exact name (no extension triggers it), so the `#` footer renders
-/// as dimmed comments wherever the user's `git commit` is dimmed.
-const COMMIT_EDITMSG: &str = "COMMIT_EDITMSG";
-
 /// What an editor round-trip produced, before the draft is persisted or cleaned.
 enum Verdict {
     Approved(String),
@@ -192,18 +257,21 @@ fn edit_and_classify(
     }
     let raw = fs::read_to_string(path)?;
     let final_content = strip_scissors(&raw);
+    // Abort wins over the silent-failure heuristic: emptying the buffer is a
+    // deliberate abort, never a "the editor did nothing" misfire.
+    if final_content.trim().is_empty() {
+        return Ok(Verdict::Aborted);
+    }
     if final_content == original.trim_end() && elapsed.as_millis() < MIN_ELAPSED_MS {
         return Ok(Verdict::SilentFailure {
             elapsed_ms: elapsed.as_millis() as u32,
         });
     }
-    if final_content.trim().is_empty() {
-        return Ok(Verdict::Aborted);
-    }
     Ok(Verdict::Approved(final_content))
 }
 
-/// Persist the draft directory so the user can recover the file at `path`.
+/// Persist the draft directory (leaking it) so the user can recover the file at
+/// `path`, and return that path.
 fn keep_draft(dir: TempDir, path: PathBuf) -> PathBuf {
     let _ = dir.keep();
     path
@@ -212,16 +280,25 @@ fn keep_draft(dir: TempDir, path: PathBuf) -> PathBuf {
 /// Open `content` in the user's editor and return the approved bytes.
 ///
 /// - `Ok(Outcome::Approved(s))` -- user saved non-empty content.
-/// - `Ok(Outcome::Aborted { .. })` -- user emptied the content above scissors.
-/// - `Err(..)` -- no editor, editor failure, silent failure, or I/O error.
-///   Aborted and the failure cases preserve the draft file for recovery.
-pub fn approve_in_editor(content: &str, context: Option<&str>) -> Result<Outcome, ScissorsError> {
+/// - `Ok(Outcome::Aborted { .. })` -- user emptied the content above scissors;
+///   the draft file is preserved at `draft_path`.
+///
+/// # Errors
+/// All error cases preserve the draft file and report its path.
+/// - [`ScissorsError::NoEditor`] -- `$VISUAL`/`$EDITOR` unset/empty and `vi` not found.
+/// - [`ScissorsError::EditorFailed`] -- the editor exited non-zero.
+/// - [`ScissorsError::SilentFailure`] -- the editor returned in under
+///   `500 ms` with no change (likely never opened, e.g. a GUI editor without a
+///   wait flag, or a sandbox blocking its IPC).
+/// - [`ScissorsError::Io`] -- a tempfile or read/write failure, including
+///   non-UTF-8 content.
+pub fn approve_in_editor(content: &str, options: &Options<'_>) -> Result<Outcome, ScissorsError> {
     let editor = resolve_editor()?;
 
     // Edit in a COMMIT_EDITMSG file inside a tempdir so the editor dims the footer.
     let dir = Builder::new().prefix("scissors-").tempdir()?;
     let path = dir.path().join(COMMIT_EDITMSG);
-    fs::write(&path, build_draft(content, context).as_bytes())?;
+    fs::write(&path, build_draft(content, options.context).as_bytes())?;
 
     match edit_and_classify(&editor, &path, content)? {
         Verdict::Approved(approved) => Ok(Outcome::Approved(approved)),
@@ -242,60 +319,79 @@ pub fn approve_in_editor(content: &str, context: Option<&str>) -> Result<Outcome
 /// Open `path` in the user's editor, edited in place. The caller owns `path`:
 /// this never creates or deletes it.
 ///
+/// `path` is resolved with `fs::canonicalize`, so if it is a **symlink the link
+/// target is edited** (the symlink itself is left pointing where it did).
 /// Editing happens in a `COMMIT_EDITMSG` sidecar inside a temp directory beside
-/// the target (so the editor dims the footer); the target is never written until
-/// the final atomic rename on approve. On abort or any error the sidecar is
-/// discarded and the target is left exactly as it was.
+/// the target (so the editor dims the footer and the final rename is atomic on
+/// the same filesystem); the target is never written until that rename. On abort
+/// or any error the sidecar is discarded and the target is left exactly as it
+/// was. The atomic replace installs a **new inode**: the mode bits are copied,
+/// but owner, group, ACLs and extended attributes are reset to the editing
+/// user's defaults, and hard links break.
 ///
-/// - `Ok(FileOutcome::Approved)` -- the stripped content was atomically swapped
-///   onto `path`.
-/// - `Ok(FileOutcome::Aborted)` -- user emptied the content; `path` untouched.
-/// - `Err(..)` -- no editor, editor failure, silent failure, or I/O error;
-///   `path` untouched.
-pub fn approve_file_in_place(path: &Path, context: Option<&str>) -> Result<FileOutcome, FileError> {
-    let original = fs::read_to_string(path).map_err(|source| FileError::Read {
+/// # Errors
+/// On every error the target is left exactly as it was.
+/// - [`FileError::Read`] -- `path` cannot be read or canonicalized (missing,
+///   permission denied, or non-UTF-8 content).
+/// - [`FileError::MarkerInInput`] -- `path` already contains the scissors line;
+///   refused before the editor opens to avoid truncating content below it.
+/// - [`FileError::Prepare`] -- the sidecar could not be created in the target's
+///   directory (e.g. a read-only directory).
+/// - [`FileError::NoEditor`] / [`FileError::EditorFailed`] /
+///   [`FileError::SilentFailure`] -- editor resolution / launch outcomes.
+/// - [`FileError::Persist`] -- the final atomic rename failed; the edited draft
+///   is kept at the reported sidecar path.
+/// - [`FileError::Io`] -- another I/O failure.
+pub fn approve_file_in_place(path: &Path, options: &Options<'_>) -> Result<FileOutcome, FileError> {
+    // Resolve the real target ONCE (write through symlinks), then read through
+    // the canonical path so the bytes shown and the rename destination are the
+    // same inode (no TOCTOU) and the sidecar lands on the same filesystem.
+    let target = fs::canonicalize(path).map_err(|source| FileError::Read {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let original = fs::read_to_string(&target).map_err(|source| FileError::Read {
         path: path.to_path_buf(),
         source,
     })?;
 
     // Fail closed: a target that already holds the scissors line would let the
     // editor (or a footer deletion) leave a marker that strips away real content
-    // on the permanent on-disk write. Refuse before touching anything.
-    if let Some(i) = original.lines().position(|l| l.trim_end() == SCISSORS) {
+    // on the permanent on-disk write. Refuse before touching anything, using the
+    // same predicate `strip_scissors` cuts on (the first hit is enough to refuse).
+    if let Some(i) = original.lines().position(is_scissors_line) {
         return Err(FileError::MarkerInInput {
             path: path.to_path_buf(),
             line: i + 1,
         });
     }
 
-    // Resolve the real target (write through symlinks) so the sidecar lives on
-    // the same filesystem and the rename is atomic.
-    let target = fs::canonicalize(path).map_err(|source| FileError::Read {
-        path: path.to_path_buf(),
-        source,
-    })?;
     let parent = target.parent().unwrap_or_else(|| Path::new("."));
-
-    let editor = resolve_editor().map_err(|e| match e {
-        ScissorsError::Io(io) => FileError::Io(io),
-        other => FileError::Io(io::Error::other(other.to_string())),
-    })?;
+    let editor = resolve_editor().map_err(FileError::from)?;
 
     // Edit in a COMMIT_EDITMSG file inside a tempdir beside the target; the target
     // is untouched until the atomic rename on approve.
-    let dir = Builder::new().prefix(".scissors-").tempdir_in(parent)?;
+    let dir = Builder::new()
+        .prefix(".scissors-")
+        .tempdir_in(parent)
+        .map_err(|source| FileError::Prepare {
+            dir: parent.to_path_buf(),
+            source,
+        })?;
     let sidecar = dir.path().join(COMMIT_EDITMSG);
-    fs::write(&sidecar, build_draft(&original, context).as_bytes())?;
-    // Preserve permissions so the replace doesn't change the file's mode.
-    fs::set_permissions(&sidecar, fs::metadata(&target)?.permissions())?;
+    // Write the draft and copy the target's mode bits onto the sidecar so the
+    // replace doesn't change the file's mode. (Owner/group/ACLs/xattrs are NOT
+    // preserved: the rename installs a new inode owned by the editing user.)
+    fs::write(&sidecar, build_draft(&original, options.context).as_bytes())
+        .and_then(|()| fs::set_permissions(&sidecar, fs::metadata(&target)?.permissions()))
+        .map_err(|source| FileError::Prepare {
+            dir: parent.to_path_buf(),
+            source,
+        })?;
 
     eprintln!("scissors: editing {}", sidecar.display());
 
-    let verdict = edit_and_classify(&editor, &sidecar, &original).map_err(|e| match e {
-        ScissorsError::NoEditor => FileError::NoEditor,
-        ScissorsError::Io(io) => FileError::Io(io),
-        other => FileError::Io(io::Error::other(other.to_string())),
-    })?;
+    let verdict = edit_and_classify(&editor, &sidecar, &original).map_err(FileError::from)?;
 
     match verdict {
         Verdict::Approved(content) => {
@@ -318,7 +414,7 @@ pub fn approve_file_in_place(path: &Path, context: Option<&str>) -> Result<FileO
         // the target is left exactly as it was.
         Verdict::Aborted => Ok(FileOutcome::Aborted),
         Verdict::SilentFailure { elapsed_ms } => Err(FileError::SilentFailure { elapsed_ms }),
-        Verdict::EditorFailed { code } => Err(FileError::EditorExited { code }),
+        Verdict::EditorFailed { code } => Err(FileError::EditorFailed { code }),
     }
 }
 
