@@ -85,7 +85,10 @@ directory beside the target, and the file is never touched until the final
 atomic rename, so it is never left half-written even if `scissors` is
 interrupted mid-edit. The atomic replace
 gives the file a new inode, so hard links break and a symlink is written through
-to its target. `scissors` prints the sidecar path to stderr at launch, so you
+to its target. The mode bits are copied onto the new inode, but owner, group,
+ACLs and extended attributes reset to the editing user's defaults, so avoid
+`sudo scissors <file>` on a file whose ownership or security context must be
+preserved. `scissors` prints the sidecar path to stderr at launch, so you
 can reopen it if you lose the editor window. The outcome is signalled by the
 exit code (0/1/2); nothing is written to stdout in this mode.
 
@@ -104,7 +107,7 @@ omitting the argument does the same.
 |------|---------|
 | `0`  | approved -- file written in place (file mode), or content on stdout (stdin) |
 | `1`  | aborted -- you emptied the content above the scissors line |
-| `2`  | error -- no editor available, editor failed, or I/O error |
+| `2`  | error -- no editor available, editor failed, non-UTF-8 input, or I/O error |
 
 In stdin mode, on abort or error the draft tempfile is preserved and its path is printed to stderr. In file mode, on abort or error the file is left unchanged (the edit happens in a sidecar that is discarded).
 
@@ -131,6 +134,10 @@ echo "$DRAFT" | scissors --yes   # approve verbatim, exit 0
 This mirrors `git commit` (interactive editor vs `-m`/`--no-edit`): the same
 pipeline works interactively (edit) and unattended (`--yes`).
 
+One asymmetry to note for scripts: with `--yes`, empty stdin is approved as-is
+(exit 0), but an empty or whitespace-only *file* is rejected (exit 1), since
+there is nothing to approve in place.
+
 ## Running under a sandbox
 
 Some environments (AI agents, restricted CI, Claude Code) run commands in a
@@ -152,12 +159,28 @@ surfaces a clear error when the editor never opens.
 
 ## Library usage (Rust)
 
-```rust
-use scissors::{approve_in_editor, Outcome};
+Both entry points take an `Options` builder so new knobs stay additive. Input
+is UTF-8 text only; non-UTF-8 bytes surface as an error before anything is
+written.
 
-match approve_in_editor("draft content", Some("context"))? {
+```rust
+use scissors::{approve_in_editor, Options, Outcome};
+
+// stdin-style: returns the approved text
+match approve_in_editor("draft content", &Options::new().context("Issue #26 reply"))? {
     Outcome::Approved(text) => println!("approved: {text}"),
     Outcome::Aborted { draft_path } => eprintln!("aborted: {}", draft_path.display()),
+}
+```
+
+```rust
+use std::path::Path;
+use scissors::{approve_file_in_place, FileOutcome, Options};
+
+// in-place: the approved content is written back to the file
+match approve_file_in_place(Path::new("notes.md"), &Options::new())? {
+    FileOutcome::Approved => println!("notes.md updated"),
+    FileOutcome::Aborted => eprintln!("aborted; notes.md unchanged"),
 }
 ```
 
