@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::Parser;
-use scissors::{approve_file_in_place, approve_in_editor, FileOutcome, Outcome, ScissorsError};
+use scissors::{
+    approve_file_in_place, approve_in_editor, FileOutcome, Options, Outcome, ScissorsError,
+};
 
 /// Editor-based content approval, git-commit style.
 ///
@@ -32,6 +34,11 @@ struct Cli {
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
+    let opts = match cli.context.as_deref() {
+        Some(ctx) => Options::new().context(ctx),
+        None => Options::new(),
+    };
+
     // In-place file mode: a real FILE (not the `-` stdin sentinel).
     if let Some(path) = cli.file.as_deref() {
         if path != Path::new("-") {
@@ -49,7 +56,7 @@ fn main() -> ExitCode {
                     }
                 };
             }
-            return match approve_file_in_place(path, cli.context.as_deref()) {
+            return match approve_file_in_place(path, &opts) {
                 Ok(FileOutcome::Approved) => ExitCode::SUCCESS,
                 Ok(FileOutcome::Aborted) => {
                     eprintln!("scissors: aborted; {} left unchanged", path.display());
@@ -76,7 +83,7 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    match approve_in_editor(&content, cli.context.as_deref()) {
+    match approve_in_editor(&content, &opts) {
         Ok(Outcome::Approved(approved)) => {
             println!("{approved}");
             io::stdout().flush().ok();
