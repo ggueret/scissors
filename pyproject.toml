@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "scissors"
-version = "0.1.0"
+version = "0.2.0"
 description = "Editor-based content approval, git-commit style"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -12,7 +12,7 @@ license = { text = "MIT OR Apache-2.0" }
 authors = [{ name = "Geoffrey Guéret", email = "geoffrey@gueret.dev" }]
 keywords = ["cli", "editor", "approval", "scissors"]
 classifiers = [
-    "Development Status :: 2 - Pre-Alpha",
+    "Development Status :: 4 - Beta",
     "Environment :: Console",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
