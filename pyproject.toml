@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "scissors"
-version = "0.0.1"
+version = "0.1.0"
 description = "Editor-based content approval, git-commit style"
 readme = "README.md"
 requires-python = ">=3.8"
