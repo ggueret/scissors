@@ -1,15 +1,29 @@
-# scissors
+<div align="center">
+  <h1>
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="assets/brand/logo-dark.svg">
+      <img alt="scissors" src="assets/brand/logo-light.svg" height="96">
+    </picture>
+  </h1>
+  <p>
+    <a href="https://crates.io/crates/scissors"><img alt="crates.io" src="https://img.shields.io/crates/v/scissors.svg"></a>
+    <a href="https://pypi.org/project/scissors/"><img alt="PyPI" src="https://img.shields.io/pypi/v/scissors.svg"></a>
+    <a href="https://github.com/ggueret/scissors/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/ggueret/scissors/actions/workflows/ci.yml/badge.svg"></a>
+    <a href="LICENSE-MIT"><img alt="License: MIT OR Apache-2.0" src="https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg"></a>
+  </p>
+</div>
 
-[![crates.io](https://img.shields.io/crates/v/scissors.svg)](https://crates.io/crates/scissors)
-[![PyPI](https://img.shields.io/pypi/v/scissors.svg)](https://pypi.org/project/scissors/)
-[![CI](https://github.com/ggueret/scissors/actions/workflows/ci.yml/badge.svg)](https://github.com/ggueret/scissors/actions/workflows/ci.yml)
-[![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
+<div align="center">
 
 `scissors` is a Unix CLI primitive for **editor-based content approval**,
 modelled on git's `commit.cleanup=scissors` convention. It opens your content
 in your editor and keeps the approved bytes (everything above the scissors
 line). Use it as a stdin->stdout filter, or point it at a file to edit in
 place.
+
+</div>
+
+---
 
 ## Install
 
