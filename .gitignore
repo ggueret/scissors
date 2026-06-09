@@ -23,5 +23,7 @@ uv.lock
 .idea/
 .vscode/
 
+.worktrees/
+
 # Drafts (in case scissors runs locally during dev)
 /scissors-*.md
