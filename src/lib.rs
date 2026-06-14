@@ -80,7 +80,7 @@ pub enum Outcome {
 /// and report its path so the user can recover their work.
 #[derive(Debug, Error)]
 pub enum ScissorsError {
-    #[error("no editor available ($VISUAL, $EDITOR unset and editor not found)")]
+    #[error("no editor available ($SCISSORS_EDITOR, $VISUAL, $EDITOR unset and editor not found)")]
     NoEditor,
 
     #[error("editor exited with code {code}; draft at {draft_path}")]
@@ -114,7 +114,7 @@ pub enum FileOutcome {
 /// failure.
 #[derive(Debug, Error)]
 pub enum FileError {
-    #[error("no editor available ($VISUAL, $EDITOR unset and editor not found)")]
+    #[error("no editor available ($SCISSORS_EDITOR, $VISUAL, $EDITOR unset and editor not found)")]
     NoEditor,
     #[error("cannot read {}: {source}", path.display())]
     Read { path: PathBuf, source: io::Error },
@@ -197,14 +197,14 @@ fn build_draft(content: &str, context: Option<&str>) -> String {
     out
 }
 
-/// Resolve the editor command, honouring $VISUAL > $EDITOR > `vi`.
+/// Resolve the editor command, honouring $SCISSORS_EDITOR > $VISUAL > $EDITOR > `vi`.
 /// Returns the command split into program + args (e.g. `["code", "--wait"]`).
 ///
 /// # Errors
-/// [`ScissorsError::Io`] if `$VISUAL`/`$EDITOR` contains unbalanced quotes that
+/// [`ScissorsError::Io`] if `$SCISSORS_EDITOR`/`$VISUAL`/`$EDITOR` contains unbalanced quotes that
 /// `shell-words` cannot split.
 pub fn resolve_editor() -> Result<Vec<String>, ScissorsError> {
-    for var in ["VISUAL", "EDITOR"] {
+    for var in ["SCISSORS_EDITOR", "VISUAL", "EDITOR"] {
         if let Ok(val) = std::env::var(var) {
             let trimmed = val.trim();
             if !trimmed.is_empty() {
@@ -285,7 +285,7 @@ fn keep_draft(dir: TempDir, path: PathBuf) -> PathBuf {
 ///
 /// # Errors
 /// All error cases preserve the draft file and report its path.
-/// - [`ScissorsError::NoEditor`] -- `$VISUAL`/`$EDITOR` unset/empty and `vi` not found.
+/// - [`ScissorsError::NoEditor`] -- `$SCISSORS_EDITOR`/`$VISUAL`/`$EDITOR` unset/empty and `vi` not found.
 /// - [`ScissorsError::EditorFailed`] -- the editor exited non-zero.
 /// - [`ScissorsError::SilentFailure`] -- the editor returned in under
 ///   `500 ms` with no change (likely never opened, e.g. a GUI editor without a
@@ -498,7 +498,18 @@ mod editor_tests {
 
     #[test]
     #[serial]
+    fn scissors_editor_takes_priority() {
+        std::env::set_var("SCISSORS_EDITOR", "dedicated --new-window");
+        std::env::set_var("VISUAL", "myvisual --wait");
+        std::env::set_var("EDITOR", "myeditor");
+        assert_eq!(resolve_editor().unwrap(), vec!["dedicated", "--new-window"]);
+        std::env::remove_var("SCISSORS_EDITOR");
+    }
+
+    #[test]
+    #[serial]
     fn visual_takes_priority() {
+        std::env::remove_var("SCISSORS_EDITOR");
         std::env::set_var("VISUAL", "myvisual --wait");
         std::env::set_var("EDITOR", "myeditor");
         assert_eq!(resolve_editor().unwrap(), vec!["myvisual", "--wait"]);

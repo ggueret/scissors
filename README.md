@@ -70,6 +70,23 @@ greyed-out comments while you edit and the body stays plain. The cut is located
 by the `>8` marker, so the footer is detected and stripped even if its `#`
 prefix gets altered.
 
+## Choosing the editor
+
+`scissors` resolves the editor in order: `$SCISSORS_EDITOR`, then `$VISUAL`,
+then `$EDITOR`, then `vi`. `SCISSORS_EDITOR` is a dedicated override, like git's
+`GIT_EDITOR`: point `scissors` at a specific editor or flags without touching
+`$VISUAL`/`$EDITOR`, which the rest of your shell relies on.
+
+A GUI editor needs a blocking flag; a dedicated window also makes the review
+easy to find when many windows are open:
+
+```bash
+export SCISSORS_EDITOR="code --wait --new-window"   # VS Code, dedicated window
+```
+
+Without a wait flag the editor returns immediately and `scissors` reports a
+silent failure (exit 2).
+
 ## File mode
 
 Pass a file to edit it in place, like `$EDITOR <file>`:
