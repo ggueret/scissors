@@ -128,16 +128,6 @@ omitting the argument does the same.
 
 In stdin mode, on abort or error the draft tempfile is preserved and its path is printed to stderr. In file mode, on abort or error the file is left unchanged (the edit happens in a sidecar that is discarded).
 
-## Editor resolution
-
-`scissors` uses `$VISUAL`, then `$EDITOR`, then falls back to `vi`. For GUI
-editors, set a blocking flag so the process waits for you to close the file:
-
-```bash
-export VISUAL="code --wait"
-export VISUAL="subl -w"
-```
-
 ## Non-interactive / headless use
 
 `scissors` is **fail-closed**: without an editor it errors (exit 2) rather than
